@@ -69,7 +69,7 @@ cd ..
 ### 4. Install RSL-RL and other dependencies
 
 ```bash
-pip install rsl-rl==3.1.2
+pip install rsl-rl-lib==3.1.2
 ```
 
 ### 5. Clone this repo
