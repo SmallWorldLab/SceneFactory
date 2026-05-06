@@ -43,30 +43,43 @@ conda create -n scenefactory python=3.11 -y
 conda activate scenefactory
 ```
 
-### 2. Install Isaac Sim and Isaac Lab via pip
+### 2. Install Isaac Sim via pip
 
 ```bash
 pip install isaacsim[all,extscache]==5.1.0 --extra-index-url https://pypi.nvidia.com
 pip install isaacsim-rl==5.1.0 --extra-index-url https://pypi.nvidia.com
-pip install isaaclab==0.54.3
 ```
 
 > **Note:** The first install pulls ~8 GB of Isaac Sim extensions. Subsequent runs use the cached extensions.
 
-### 3. Install RSL-RL and other dependencies
+### 3. Install Isaac Lab from source
+
+Isaac Lab 0.54.3 is not on PyPI — install it directly from the GitHub repo:
+
+```bash
+git clone https://github.com/isaac-sim/IsaacLab.git
+cd IsaacLab
+git checkout v0.54.3
+pip install -e source/isaaclab
+pip install -e source/isaaclab_assets
+pip install -e source/isaaclab_tasks
+cd ..
+```
+
+### 4. Install RSL-RL and other dependencies
 
 ```bash
 pip install rsl-rl==3.1.2
 ```
 
-### 4. Clone this repo
+### 5. Clone this repo
 
 ```bash
 git clone https://github.com/BrainCrackLab/SceneFactory.git
 cd SceneFactory
 ```
 
-### 5. Prepare Waymo scene data
+### 6. Prepare Waymo scene data
 
 Download the [Waymo Open Motion Dataset](https://waymo.com/open/data/motion/) TFRecords, then run the offline extraction pipeline to produce per-scenario JSON files:
 
