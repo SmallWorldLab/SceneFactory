@@ -1695,9 +1695,17 @@ class ChocolateBarConstructor:
         if len(json_list) == 0:
             raise ValueError("json_paths is empty")
 
+        import sys as _sys
+        import time as _time
         _n = int(world_count)
-        _bar_width = 40
-        print(f"[SceneFactory] Building {_n} worlds ", end="", flush=True)
+        _bar_width = 30
+        _t0 = _time.time()
+        # milestone steps: 0%, 10%, 20%, ... 100%
+        _milestones = set(max(0, int(_n * p / 10) - 1) for p in range(1, 11))
+        _milestones.add(0)
+        _milestones.add(_n - 1)
+        _sys.stderr.write(f"[SceneFactory] Building {_n} worlds...\n")
+        _sys.stderr.flush()
         for i in range(_n):
             root = self._world_root_path(i)
             UsdGeom.Xform.Define(self.stage, root)
@@ -1776,7 +1784,9 @@ class ChocolateBarConstructor:
                 vehicle_trigger_size_m=vehicle_trigger_size_m,
                 vehicle_trigger_script_enable=vehicle_trigger_script_enable,
             )
-        print(f"\r[SceneFactory] Building {_n} worlds [{'█' * _bar_width}] {_n}/{_n}  done", flush=True)
+        _elapsed = _time.time() - _t0
+        _sys.stderr.write(f"[SceneFactory] Built {_n} worlds in {_elapsed:.1f}s\n")
+        _sys.stderr.flush()
         self.build_global_boundary(
             world_count=int(world_count),
             add_floor=False,
