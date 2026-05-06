@@ -1,49 +1,44 @@
-#!/bin/bash
-# Quick start script for cross-simulator policy transfer benchmark
-# Automatically uses conda environments as needed
+#!/usr/bin/env bash
+# SceneFactory quickstart — verifies setup and runs a 4-world visualization
+set -euo pipefail
 
-set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-NUM_EPISODES=50
-OUTPUT_FILE="policy_transfer_results.json"
-
-echo "Cross-Simulator Policy Transfer - Quick Start"
-echo "=============================================="
+echo "=========================================="
+echo "  SceneFactory Quickstart"
+echo "=========================================="
 echo ""
 
-# Test with MetaDrive conda env
-echo "Testing adapter with MetaDrive environment..."
-conda run -n metadrive python << 'EOF'
-import sys
-try:
-    from metadrive.examples.scenefactory_adapter import SceneFactoryToMetaDriveAdapter
-    import numpy as np
-    
-    adapter = SceneFactoryToMetaDriveAdapter(deterministic=True)
-    print("✓ Adapter initialized successfully")
-    
-    # Quick test
-    dummy_obs = np.random.randn(1929).astype(np.float32)
-    md_obs = adapter.scenefactory_to_metadrive(dummy_obs)
-    md_action = adapter.get_metadrive_expert_action(md_obs)
-    sf_action = adapter.metadrive_to_scenefactory_action(md_action)
-    print(f"✓ Data flow test passed: {dummy_obs.shape} → {md_obs.shape} → {md_action.shape} → {sf_action.shape}")
-    
-except Exception as e:
-    print(f"✗ Error: {e}", file=sys.stderr)
-    sys.exit(1)
-EOF
+# 1. Check isaaclab.sh is available
+if ! command -v isaaclab.sh &>/dev/null; then
+  echo "ERROR: 'isaaclab.sh' not found on PATH."
+  echo "Please install Isaac Lab and add it to your PATH."
+  echo "  https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html"
+  exit 1
+fi
+echo "[1/3] isaaclab.sh found: $(which isaaclab.sh)"
 
+# 2. Check scene data exists
+SCENE_DIR="data/processed/waymo_scenes_json"
+if [[ ! -d "$SCENE_DIR" ]] || [[ -z "$(ls -A "$SCENE_DIR" 2>/dev/null)" ]]; then
+  echo ""
+  echo "WARNING: Scene data not found at '$SCENE_DIR'."
+  echo "Run the Waymo preprocessing pipeline first:"
+  echo ""
+  echo "  isaaclab.sh -p -m src.trfc.world_pipeline \\"
+  echo "    --tfrecord-dir /path/to/waymo_tfrecords \\"
+  echo "    --output-dir $SCENE_DIR"
+  echo ""
+  exit 1
+fi
+NSCENES=$(ls "$SCENE_DIR"/*.json 2>/dev/null | wc -l)
+echo "[2/3] Scene data found: $NSCENES JSON scenes in $SCENE_DIR"
+
+# 3. Launch 4-world visualization
+echo "[3/3] Launching 4-world visualization..."
 echo ""
-echo "✓ All checks passed!"
-echo ""
-echo "To run the full benchmark with SceneFactory:"
-echo "  cd /home/yz8733/Github/isaac-rl"
-echo "  conda run -n isaac-rl python benchmark_policy_transfer.py --num-episodes 50 --output results.json --latex"
-echo ""
-echo "The benchmark will:"
-echo "  - Run 50 episodes of MetaDrive expert policy on SceneFactory"
-echo "  - Measure success rate, collision rate, and rewards"
-echo "  - Generate LaTeX table row for your paper"
-echo "  - Save detailed results to results.json"
-echo ""
+PYTHONPATH=. isaaclab.sh -p src/run_student_vehicle_goal_multiagent_random.py \
+  --config configs/scene_factory/visualize_scene.yaml \
+  --world_count 4 \
+  "$@"

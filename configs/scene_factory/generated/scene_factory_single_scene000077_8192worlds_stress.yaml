@@ -1,6 +1,6 @@
 # Single known-good scene (scene_000077) tiled to 8192 worlds.
 io:
-  scene_json_dir: /home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json
+  scene_json_dir: data/processed/waymo_scenes_json
 
 world:
   root_container: /World/SceneFactoryWorlds

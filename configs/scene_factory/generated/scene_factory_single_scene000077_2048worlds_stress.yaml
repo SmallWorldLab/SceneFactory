@@ -3,7 +3,7 @@
 # All agents use random OD (controlled by env goal_radius_min/max in training config).
 
 io:
-  scene_json_dir: /home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json
+  scene_json_dir: data/processed/waymo_scenes_json
 
 world:
   root_container: /World/SceneFactoryWorlds

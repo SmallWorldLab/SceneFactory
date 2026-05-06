@@ -2,7 +2,7 @@
 # Purpose: world-count upper-bound stress test — 1-agent series, 512 agent slots.
 
 io:
-  scene_json_dir: /home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json
+  scene_json_dir: data/processed/waymo_scenes_json
 
 world:
   root_container: /World/SceneFactoryWorlds
