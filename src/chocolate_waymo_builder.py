@@ -1695,7 +1695,10 @@ class ChocolateBarConstructor:
         if len(json_list) == 0:
             raise ValueError("json_paths is empty")
 
-        for i in range(int(world_count)):
+        _n = int(world_count)
+        _bar_width = 40
+        print(f"[SceneFactory] Building {_n} worlds ", end="", flush=True)
+        for i in range(_n):
             root = self._world_root_path(i)
             UsdGeom.Xform.Define(self.stage, root)
 
@@ -1717,6 +1720,11 @@ class ChocolateBarConstructor:
                 origin_center_mode=self.origin_center_mode,
             )
 
+            # ── progress bar ──────────────────────────────────────────────
+            _filled = int(_bar_width * (i + 1) / max(_n, 1))
+            _bar = "█" * _filled + "░" * (_bar_width - _filled)
+            print(f"\r[SceneFactory] Building {_n} worlds [{_bar}] {i + 1}/{_n}", end="", flush=True)
+            # ─────────────────────────────────────────────────────────────────
             json_path = json_list[i % len(json_list)]
             builder.build_from_json(
                 json_path,
@@ -1768,6 +1776,7 @@ class ChocolateBarConstructor:
                 vehicle_trigger_size_m=vehicle_trigger_size_m,
                 vehicle_trigger_script_enable=vehicle_trigger_script_enable,
             )
+        print(f"\r[SceneFactory] Building {_n} worlds [{'█' * _bar_width}] {_n}/{_n}  done", flush=True)
         self.build_global_boundary(
             world_count=int(world_count),
             add_floor=False,
@@ -1776,5 +1785,3 @@ class ChocolateBarConstructor:
             add_perimeter_walls=True,
             add_grid_lines=True,
         )
-
-        print(f"[ChocolateBarConstructor] Built {world_count} worlds under {self.root_container}")
