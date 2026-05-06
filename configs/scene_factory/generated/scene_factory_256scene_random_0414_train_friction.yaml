@@ -6,7 +6,7 @@
 #   5% OGFC rain (h_w=4.0mm)
 # All scene geometry is identical to the original.
 io:
-  scene_json_dir: /home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json
+  scene_json_dir: data/processed/waymo_scenes_json
 world:
   root_container: /World/SceneFactoryWorlds
   world_count: 256

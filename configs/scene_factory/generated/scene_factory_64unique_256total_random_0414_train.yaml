@@ -1,7 +1,7 @@
 # 64 unique scenes, 256 total worlds (random_fill repeats)
 # Subset of scene_factory_256scene_random_0414_train.yaml (first 64 assignments)
 io:
-  scene_json_dir: /home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json
+  scene_json_dir: data/processed/waymo_scenes_json
 world:
   root_container: /World/SceneFactoryWorlds
   world_count: 256
