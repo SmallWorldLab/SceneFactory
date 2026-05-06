@@ -406,13 +406,31 @@ def resolve_scene_factory_env_assignments(cfg: "StudentVehicleMultiAgentGoalEnvC
             start_goal_thresh_m=vehicles_cfg.get("start_goal_thresh_m"),
         )
         if len(spawns) <= 0:
-            raise RuntimeError(
-                "SceneFactory source world does not provide any controllable spawns "
-                f"for env_{env_index}: {world_spec.scene_json_name}"
+            print(
+                f"[WARNING] SceneFactory: {world_spec.scene_json_name} yields no controllable spawns "
+                f"(env_{env_index}) — skipping this scene."
             )
+            continue
         min_available = min(min_available, len(spawns))
         per_env_specs.append(world_spec)
         per_env_spawns.append(list(spawns))
+
+    if not per_env_specs:
+        raise RuntimeError(
+            "SceneFactory: every selected scene yielded zero controllable spawns. "
+            "Check bounds_size_m, require_goal_in_bounds, and your scene JSON files."
+        )
+
+    # If we filtered some scenes out, fill remaining env slots by cycling through valid ones
+    if len(per_env_specs) < num_envs:
+        n_valid = len(per_env_specs)
+        print(
+            f"[WARNING] SceneFactory: {num_envs - n_valid} scene(s) were skipped due to no spawns. "
+            f"Cycling through {n_valid} valid scene(s) to fill {num_envs} env slots."
+        )
+        while len(per_env_specs) < num_envs:
+            per_env_specs.append(per_env_specs[len(per_env_specs) % n_valid])
+            per_env_spawns.append(per_env_spawns[len(per_env_spawns) % n_valid])
 
     if min_available < requested_agents:
         availability = ", ".join(
