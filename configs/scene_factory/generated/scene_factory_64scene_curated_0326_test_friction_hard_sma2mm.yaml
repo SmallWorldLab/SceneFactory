@@ -1,0 +1,413 @@
+# scene_factory_64scene_curated_0326_test_friction_hard_sma2mm.yaml
+# All 64 held-out test scenes forced to uniform HARD weather: SMA road + 2.0mm water film.
+# μ_static ≈ 0.55 (vs 1.10 for dry AC), μ_dynamic ≈ 0.55.
+#
+# Rationale: random friction assignment (scene_factory_64scene_curated_0326_test_friction.yaml)
+# conflates geometry difficulty with friction difficulty — easy straight-road scenes that draw
+# dry AC inflate the SR numerator. This uniform-hard config controls for that: every scene
+# sees the same surface condition, so the only variable between v7 and v8 is the policy's
+# friction awareness, not which scenes happened to draw wet weather.
+#
+# SMA + 2.0mm is within v7's training distribution (10% of training scenes) but is
+# challenging enough to discriminate between friction-aware and friction-naive policies.
+# It is NOT so extreme (e.g., OGFC 4mm) that both models collapse simultaneously.
+io:
+  scene_json_dir: /home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json
+world:
+  root_container: /World/SceneFactoryWorlds
+  world_count: 64
+  grid_cols: 8
+  rows: 8
+  world_size_m:
+  - 200.0
+  - 200.0
+  padding_m: 200.0
+  base_z_m: 0.0
+  bounds_size_m: 200.0
+  origin_mode: center
+  origin_center_mode: mean
+  assignments:
+  - scene_json: scene_000090.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000092.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000094.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000095.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000099.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000101.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000103.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000106.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000109.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000111.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000112.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000115.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000116.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000119.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000121.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000124.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000126.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000128.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000129.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000132.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000133.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000134.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000137.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000138.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000140.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000141.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000142.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000143.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000144.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000145.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000146.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000147.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000149.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000152.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000154.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000155.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000156.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000157.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000158.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000159.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000161.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000163.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000164.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000165.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000168.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000169.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000170.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000171.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000174.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000176.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000179.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000180.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000182.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000183.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000184.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000185.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000186.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000187.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000188.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000191.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000192.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000195.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000198.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0
+  - scene_json: scene_000199.json
+    friction:
+      road_type: SMA
+      precip_type: rain
+      precip_intensity_mmph: 5.0
+      water_film_mm: 2.0

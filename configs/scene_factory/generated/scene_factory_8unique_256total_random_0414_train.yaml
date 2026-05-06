@@ -1,0 +1,68 @@
+# 8 unique scenes, 256 total worlds (random_fill repeats)
+# Subset of scene_factory_256scene_random_0414_train.yaml (first 8 assignments)
+io:
+  scene_json_dir: /home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json
+world:
+  root_container: /World/SceneFactoryWorlds
+  world_count: 256
+  grid_cols: 16
+  rows: 16
+  world_size_m:
+  - 200.0
+  - 200.0
+  padding_m: 200.0
+  base_z_m: 0.0
+  bounds_size_m: 200.0
+  origin_mode: center
+  origin_center_mode: mean
+  assignment_fill_mode: random_fill
+  assignment_fill_seed: 2024
+  assignments:
+  - scene_json: scene_000000.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0
+  - scene_json: scene_000002.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0
+  - scene_json: scene_000003.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0
+  - scene_json: scene_000006.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0
+  - scene_json: scene_000011.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0
+  - scene_json: scene_000014.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0
+  - scene_json: scene_000016.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0
+  - scene_json: scene_000017.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0
