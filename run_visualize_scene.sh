@@ -5,8 +5,9 @@
 #  for illustration / screenshot purposes.
 #
 #  Usage:
-#    bash run_visualize_scene.sh                   # default 4 worlds
+#    bash run_visualize_scene.sh                   # default 4 worlds, GUI
 #    bash run_visualize_scene.sh --world_count 1   # single world
+#    bash run_visualize_scene.sh --headless         # headless (no GUI window)
 #    bash run_visualize_scene.sh --save_stage_usd  # also export .usda
 # ============================================================
 set -euo pipefail

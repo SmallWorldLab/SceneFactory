@@ -36,7 +36,7 @@ road:
 
 vehicles:
   student_usd: "artifacts/student_vehicle_assets/vehicle_only_smoke/student_fwd_vehicle.usd"
-  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v2/best_config.json"
+  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
   max_controllable_per_world: 8
   spawn_height_m: 1.2
   require_goal_in_bounds: true

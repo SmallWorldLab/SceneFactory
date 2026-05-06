@@ -69,7 +69,7 @@ cd ..
 ### 4. Install RSL-RL and other dependencies
 
 ```bash
-pip install plotly
+pip install plotly h5py
 pip install rsl-rl-lib==3.1.2
 ```
 
@@ -112,10 +112,11 @@ Processed JSONs are written to `data/processed/waymo_scenes_json/`, which is alr
 
 ## Quickstart
 
-### Visualize scenes (headless-optional)
+### Visualize scenes
 
 ```bash
-bash run_visualize_scene.sh --world_count 4
+bash run_visualize_scene.sh --world_count 4          # GUI mode
+bash run_visualize_scene.sh --world_count 4 --headless  # headless (no window)
 ```
 
 ### Train (PhysX, dry, 128 unique scenes)
