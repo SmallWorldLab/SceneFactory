@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Training outputs
+runs/
+logs/
+
+# Data (large files — not redistributable)
+data/waymo_tfrecords/*.tfrecord*
+data/processed/waymo_scenes_json/*.json
+
+# Eval output directories (timestamped)
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*_eval_*/

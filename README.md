@@ -82,15 +82,22 @@ cd SceneFactory
 
 ### 6. Prepare Waymo scene data
 
-Download the [Waymo Open Motion Dataset](https://waymo.com/open/data/motion/) TFRecords, then run the offline extraction pipeline to produce per-scenario JSON files:
+Download the [Waymo Open Motion Dataset](https://waymo.com/open/data/motion/) (requires accepting the Waymo license).
+Place the downloaded `*.tfrecord` files into the designated folder:
+
+```
+data/waymo_tfrecords/
+```
+
+Then run the offline extraction pipeline to produce per-scenario JSON files:
 
 ```bash
 python -m src.trfc.world_pipeline \
-  --tfrecord-dir /path/to/waymo_tfrecords \
+  --tfrecord-dir data/waymo_tfrecords \
   --output-dir data/processed/waymo_scenes_json
 ```
 
-Point all configs at the output directory via `scene_json_dir: data/processed/waymo_scenes_json` (this is already the default in the provided configs).
+Processed JSONs will be written to `data/processed/waymo_scenes_json/`, which is already the default `scene_json_dir` in all provided configs — no further changes needed.
 
 ---
 
