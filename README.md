@@ -30,7 +30,7 @@ Built on [NVIDIA Isaac Sim](https://developer.nvidia.com/isaac-sim) and [Isaac L
 | CUDA | 12.8 |
 | GPU (tested) | NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM) |
 
-Isaac Sim can be installed as a pip package inside a conda environment (Python 3.10 recommended).
+Isaac Sim can be installed as a pip package inside a conda environment (Python 3.11 recommended).
 
 ---
 
