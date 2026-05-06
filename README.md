@@ -39,8 +39,8 @@ Isaac Sim can be installed as a pip package inside a conda environment (Python 3
 ### 1. Create a conda environment
 
 ```bash
-conda create -n isaac-pytorch python=3.10 -y
-conda activate isaac-pytorch
+conda create -n scenefactory python=3.10 -y
+conda activate scenefactory
 ```
 
 ### 2. Install Isaac Sim and Isaac Lab via pip
