@@ -1,0 +1,143 @@
+# Eval: v8 (dry-only training) on DRY ASPHALT, RANDOM OD (10-100m)
+#
+# Same as eval_v8_sysid4_noweather_model_300_test64_dry.yaml but with random OD pairs.
+# 64 test scenes x 16 agents = 1024 agent slots (all filled with random OD).
+# Purpose: controlled-agent-count dry-road comparison with v7.
+# Both obs and physics are fully in-distribution for v8.
+#
+# Checkpoint: model_300.pt from run 2026-04-22_13-34-40 (latest v8 checkpoint)
+# Comparison pair: eval_v7_sysid4_weather_model_600_test64_dry_random_od.yaml
+#
+# Launch:
+#   PYTHONPATH=. python -u src/train_student_vehicle_goal_multiagent_rsl_rl.py \
+#     --config configs/scene_factory/generated/eval_v8_sysid4_noweather_model_300_test64_dry_random_od.yaml \
+#     --test_mode scene_factory_policy_eval \
+#     --checkpoint_path logs/rsl_rl/scene_factory_goal_reaching_roads/2026-04-22_13-34-40_scene_factory_256scene_random_0414_train_fastgoal_v8_sysid4_noweather/model_300.pt \
+#     --invincible --headless --no-use_fabric --device cuda:0 \
+#     --random_od --random_od_min_m 10 --random_od_max_m 100
+
+env:
+  num_envs: 64
+  num_agents_per_env: 16
+  observation_mode: "choco_reference"
+  env_spacing: 400.0
+  spawn_height_m: 1.2
+  spawn_yaw_noise_rad: 0.0
+  ground_mode: "plane"
+  use_scene_factory_roads: true
+  reset_mode: "teleport_only"
+  start_radius_m: 0.0
+  agent_spawn_circle_radius_m: 0.0
+  agent_spawn_jitter_m: 0.0
+  episode_length_s: 50.0
+  goal_radius_min_m: 10.0
+  goal_radius_max_m: 100.0
+  goal_reached_threshold_m: 3.0
+  fall_height_threshold_m: 0.0
+  bad_tilt_gravity_threshold: -0.15
+  max_distance_from_origin_m: 100.0
+  agent_neighbor_obs_scale_m: 100.0
+  agent_collision_warmup_steps: 24
+  replicate_physics: false
+  clone_in_fabric: "false"
+
+scene_factory:
+  config_path: "configs/scene_factory/generated/scene_factory_64scene_curated_0326_test_weather_dry.yaml"
+  world_index: 0
+  world_selection_mode: "random_envs"
+  random_world_seed: 42
+  use_fabric: false
+
+observation:
+  weather_context_enable: true
+  weather_context_blind: true   # v8 trained dry → always saw [0,1,0,0]; keep obs in-distribution
+  road_points_enable: true
+  road_points_k: 350
+  road_points_radius_m: 10.0
+  road_points_type_norm: 20.0
+  road_points_mode: "road_running"
+  road_points_include_dirs: true
+  neighbor_enable: true
+  neighbor_k: 24
+  neighbor_include_ttc: true
+  neighbor_include_index: false
+  neighbor_ttc_max_s: 10.0
+  timing_print_enable: false
+  timing_print_every_n: 32
+
+timing:
+  step_log_enable: true
+  step_print_enable: false
+  step_print_every_n: 128
+  step_cuda_sync_enable: false
+
+reward:
+  mode: "choco_baseline"
+  goal_bonus: 60.0
+  lane_center_enable: false
+  lane_forbidden_enable: true
+  lane_forbidden_penalty: -20.0
+  collision_penalty: -6.0
+  crash_penalty: -10.0
+  choco_offroad_penalty: -0.5
+  choco_idle_penalty_enable: true
+  choco_idle_penalty_per_step: 0.06
+  choco_idle_speed_threshold_mps: 2.5
+  choco_geom_lane_enable: true
+  choco_geom_lane_per_step: 0.08
+  choco_geom_lane_tolerance_m: 1.75
+  choco_geom_lane_heading_weight: 0.8
+  choco_geom_lane_min_alignment: 0.35
+  choco_geom_route_progress_weight: 4.0
+  choco_geom_offroad_enable: true
+  choco_geom_offroad_lateral_threshold_m: 3.25
+  choco_geom_offroad_distance_threshold_m: 6.0
+  choco_ttc_penalty_enable: true
+  choco_ttc_penalty_alpha: 0.10
+  choco_ttc_penalty_max: 0.35
+  choco_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_penalty_enable: true
+  choco_road_edge_ttc_penalty_alpha: 0.07
+  choco_road_edge_ttc_penalty_max: 0.40
+  choco_road_edge_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_hard_min_ttc: 0.5
+  choco_road_edge_ttc_radius_m: 40.0
+
+video:
+  enabled: true
+  view_mode: "per_env"
+  width: 1920
+  height: 1080
+  fps: 30
+  step_stride: 1
+  vehicle_proxy_markers: true
+  vehicle_proxy_z_offset_m: 0.35
+
+policy:
+  type: "late_fusion"
+  ego_layers: [64, 64]
+  road_layers: [96, 96]
+  vehicle_layers: [96, 96]
+  shared_layers: [128, 64]
+  last_layer_dim_pi: 64
+  last_layer_dim_vf: 64
+  activation: "relu"
+  dropout: 0.0
+  pool: "max"
+
+assets:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
+
+runner:
+  log_dir: "logs/rsl_rl"
+  seed: 42
+  experiment_name: "scene_factory_goal_reaching_eval"
+  run_name: "eval_v8_sysid4_noweather_model_300_test64_dry_random_od"
+  shared_policy_mode: "agent_slots"
+  max_iterations: 1
+  num_steps_per_env: 128
+  save_interval: 1
+  learning_rate: 2.0924001030314093e-4
+  num_learning_epochs: 5
+  num_mini_batches: 16

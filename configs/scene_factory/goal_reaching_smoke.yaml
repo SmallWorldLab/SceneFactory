@@ -1,0 +1,50 @@
+# SceneFactory multi-agent goal-reaching smoke preset.
+# Usage:
+#   conda run -n isaac-pytorch python -m src.train_student_vehicle_goal_multiagent_rsl_rl \
+#     --config configs/scene_factory/goal_reaching_smoke.yaml
+#
+# Purpose:
+# - quick visible sanity check
+# - small number of worlds and vehicles
+# - short run length so setup bugs show up quickly
+
+env:
+  num_envs: 2
+  num_agents_per_env: 2
+  observation_mode: "goal_reaching"
+  env_spacing: 120.0
+  spawn_height_m: 1.6
+  ground_mode: "plane"
+  start_radius_m: 0.0
+  agent_spawn_circle_radius_m: 10.0
+  agent_spawn_jitter_m: 0.10
+  episode_length_s: 20.0
+  goal_radius_min_m: 15.0
+  goal_radius_max_m: 30.0
+  max_distance_from_origin_m: 40.0
+  agent_neighbor_obs_scale_m: 40.0
+  replicate_physics: true
+  clone_in_fabric: "false"
+
+assets:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_only_smoke/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/fwd_v1_staged_cem_anchor_overnight/best_config.json"
+
+runner:
+  log_dir: "logs/rsl_rl"
+  seed: 42
+  experiment_name: "scene_factory_goal_reaching"
+  run_name: "smoke"
+  max_iterations: 2
+  num_steps_per_env: 24
+  save_interval: 1
+  learning_rate: 3.0e-4
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  entropy_coef: 0.005
+  clip_param: 0.2
+  desired_kl: 0.01
+
+app:
+  device: "cuda:0"
+  rl_device: "cuda:0"

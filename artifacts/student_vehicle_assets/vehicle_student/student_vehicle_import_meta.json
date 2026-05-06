@@ -1,0 +1,54 @@
+{
+  "robot_root_path": "/World/student_fwd_vehicle",
+  "vehicle_root_path": "/student_fwd_vehicle",
+  "urdf_path": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.urdf",
+  "spec_path": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_assets/vehicle_student/student_vehicle_spec.json",
+  "vehicle_usd_path": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd",
+  "sim_steps": 10,
+  "spawn": {
+    "x_m": 0.0,
+    "y_m": 0.0,
+    "yaw_deg": 0.0,
+    "z_m": 1.13,
+    "clearance_m": 0.25
+  },
+  "base_link_world_position_before_sim_m": [
+    0.0,
+    0.0,
+    1.13
+  ],
+  "base_link_world_position_after_sim_m": [
+    3.694976546952944e-09,
+    7.94962237886817e-19,
+    0.9174505472183228
+  ],
+  "spec": {
+    "name": "student_fwd_vehicle",
+    "chassis_length_m": 4.0,
+    "chassis_width_m": 2.0,
+    "chassis_height_m": 1.0,
+    "chassis_mass_kg": 1800.0,
+    "wheelbase_m": 2.6,
+    "track_width_m": 2.0,
+    "wheel_radius_m": 0.35,
+    "wheel_width_m": 0.15,
+    "wheel_mass_kg": 20.0,
+    "ground_clearance_m": 0.35,
+    "suspension_mount_from_bottom_m": 0.175,
+    "suspension_travel_m": 0.35,
+    "suspension_link_mass_kg": 6.0,
+    "steering_knuckle_mass_kg": 3.0,
+    "steering_limit_deg": 32.0,
+    "steering_damping": 25.0,
+    "steering_friction": 1.0,
+    "suspension_damping": 2200.0,
+    "suspension_friction": 120.0,
+    "wheel_damping": 0.25,
+    "suspension_effort_limit_n": 15000.0,
+    "suspension_velocity_limit_mps": 3.0,
+    "steering_effort_limit_nm": 1200.0,
+    "steering_velocity_limit_radps": 4.0,
+    "wheel_effort_limit_nm": 4000.0,
+    "wheel_velocity_limit_radps": 400.0
+  }
+}

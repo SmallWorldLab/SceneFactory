@@ -1,0 +1,26 @@
+# Single known-good scene (scene_000077) tiled to 4096 worlds.
+io:
+  scene_json_dir: /home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json
+
+world:
+  root_container: /World/SceneFactoryWorlds
+  world_count: 4096
+  grid_cols: 64
+  rows: 64
+  world_size_m:
+  - 200.0
+  - 200.0
+  padding_m: 200.0
+  base_z_m: 0.0
+  bounds_size_m: 200.0
+  origin_mode: center
+  origin_center_mode: mean
+  assignment_fill_mode: random_fill
+  assignment_fill_seed: 42
+  assignments:
+  - scene_json: scene_000077.json
+    friction:
+      road_type: AC
+      precip_type: clear
+      precip_intensity_mmph: 0.0
+      water_film_mm: 0.0

@@ -1,0 +1,55 @@
+io:
+  scene_json_dir: "/home/yz8733/Github/isaac-rl/data/processed/waymo_scenes_json"
+  take_first_k_scenes: 4
+
+world:
+  root_container: "/World/SceneFactoryWorlds"
+  world_count: 4
+  grid_cols: 2
+  world_size_m: [200.0, 200.0]
+  padding_m: 20.0
+  base_z_m: 0.0
+  bounds_size_m: 200.0
+  origin_mode: "center"
+  # Match the older Chocolate/GPUDrive crop behavior by default.
+  origin_center_mode: "mean"
+
+road:
+  # Use PointInstancer for fast lane rendering.
+  render_mode: "point_instancer"
+  jump_break_m: 3.0
+  seg_width: 0.10
+  seg_height: 0.01
+  z_lift: 0.02
+  flatten_road_z: true
+  road_z_m: 0.0
+  polyline_reduction_area: 0.0
+  min_points_for_reduction: 10
+  enable_segment_collision: false
+  trigger_enable: false
+
+vehicles:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_only_smoke/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/fwd_v1_staged_cem_anchor_overnight/best_config.json"
+  max_controllable_per_world: 8
+  spawn_height_m: 1.2
+  require_goal_in_bounds: true
+  skip_if_start_in_goal: true
+  goal_radius_m: 3.0
+  start_goal_thresh_m: 3.0
+
+goal_markers:
+  enable: true
+  radius_m: 1.0
+  height_m: 0.12
+
+viewer:
+  eye: [280.0, 160.0, 220.0]
+  lookat: [120.0, 120.0, 0.0]
+  light_path: "/World/Light"
+  light_intensity: 3200.0
+  light_color: [0.78, 0.78, 0.78]
+
+sim:
+  dt: 0.008333333333333333
+  steps: 0
