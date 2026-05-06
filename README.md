@@ -92,7 +92,7 @@ data/waymo_tfrecords/
 Then run the offline extraction pipeline to produce per-scenario JSON files:
 
 ```bash
-python -m src.trfc.world_pipeline \
+python src/trfc/world_pipeline.py \
   --tfrecord-dir data/waymo_tfrecords \
   --output-dir data/processed/waymo_scenes_json
 ```
