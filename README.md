@@ -69,6 +69,7 @@ cd ..
 ### 4. Install RSL-RL and other dependencies
 
 ```bash
+pip install plotly
 pip install rsl-rl-lib==3.1.2
 ```
 
