@@ -30,36 +30,48 @@ Built on [NVIDIA Isaac Sim](https://developer.nvidia.com/isaac-sim) and [Isaac L
 | CUDA | 12.8 |
 | GPU (tested) | NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM) |
 
-Isaac Sim ships its own Python environment. All Python dependencies run inside it.
+Isaac Sim can be installed as a pip package inside a conda environment (Python 3.10 recommended).
 
 ---
 
 ## Installation
 
-### 1. Install Isaac Sim + Isaac Lab
+### 1. Create a conda environment
 
-Follow the [Isaac Lab installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-Ensure `isaaclab.sh` is on your PATH or note its location.
+```bash
+conda create -n isaac-pytorch python=3.10 -y
+conda activate isaac-pytorch
+```
 
-### 2. Clone this repo
+### 2. Install Isaac Sim and Isaac Lab via pip
+
+```bash
+pip install isaacsim[all,extscache]==5.1.0 --extra-index-url https://pypi.nvidia.com
+pip install isaacsim-rl==5.1.0 --extra-index-url https://pypi.nvidia.com
+pip install isaaclab==0.54.3
+```
+
+> **Note:** The first install pulls ~8 GB of Isaac Sim extensions. Subsequent runs use the cached extensions.
+
+### 3. Install RSL-RL and other dependencies
+
+```bash
+pip install rsl-rl==3.1.2
+```
+
+### 4. Clone this repo
 
 ```bash
 git clone https://github.com/BrainCrackLab/SceneFactory.git
 cd SceneFactory
 ```
 
-### 3. Install RSL-RL into Isaac Lab's Python
-
-```bash
-isaaclab.sh -p -m pip install rsl-rl==3.1.2
-```
-
-### 4. Prepare Waymo scene data
+### 5. Prepare Waymo scene data
 
 Download the [Waymo Open Motion Dataset](https://waymo.com/open/data/motion/) TFRecords, then run the offline extraction pipeline to produce per-scenario JSON files:
 
 ```bash
-isaaclab.sh -p -m src.trfc.world_pipeline \
+python -m src.trfc.world_pipeline \
   --tfrecord-dir /path/to/waymo_tfrecords \
   --output-dir data/processed/waymo_scenes_json
 ```
@@ -79,7 +91,7 @@ bash run_visualize_scene.sh --world_count 4
 ### Train (PhysX, dry, 128 unique scenes)
 
 ```bash
-PYTHONPATH=. isaaclab.sh -p src/train_student_vehicle_goal_multiagent_rsl_rl.py \
+PYTHONPATH=. python src/train_student_vehicle_goal_multiagent_rsl_rl.py \
   --config configs/scene_factory/generated/scene_factory_256scene_random_0414_train_fastgoal_v8_sysid4_noweather.yaml \
   --headless
 ```
@@ -87,7 +99,7 @@ PYTHONPATH=. isaaclab.sh -p src/train_student_vehicle_goal_multiagent_rsl_rl.py 
 ### Train (friction-aware, 10 % wet-world exposure)
 
 ```bash
-PYTHONPATH=. isaaclab.sh -p src/train_student_vehicle_goal_multiagent_rsl_rl.py \
+PYTHONPATH=. python src/train_student_vehicle_goal_multiagent_rsl_rl.py \
   --config configs/scene_factory/generated/scene_factory_256scene_random_0414_train_fastgoal_v7_sysid4_weather.yaml \
   --headless
 ```
@@ -129,13 +141,13 @@ To re-run sysid from scratch:
 
 **Step 1 — Generate teacher maneuver programs:**
 ```bash
-PYTHONPATH=. isaaclab.sh -p -m src.physx_teacher_command_program_generator \
+PYTHONPATH=. python -m src.physx_teacher_command_program_generator \
   --output-dir artifacts/physx_teacher_programs
 ```
 
 **Step 2 — Record teacher rollouts:**
 ```bash
-PYTHONPATH=. isaaclab.sh -p -m src.physx_teacher_dataset_builder \
+PYTHONPATH=. python -m src.physx_teacher_dataset_builder \
   --dataset-dir artifacts/physx_teacher_datasets/comprehensive_fwd_v1 \
   --suite sysid-comprehensive-fwd \
   --headless
@@ -143,7 +155,7 @@ PYTHONPATH=. isaaclab.sh -p -m src.physx_teacher_dataset_builder \
 
 **Step 3 — Run CEM fitting:**
 ```bash
-PYTHONPATH=. isaaclab.sh -p -m src.student_vehicle_sysid \
+PYTHONPATH=. python -m src.student_vehicle_sysid \
   --headless \
   --teacher-dataset-manifest artifacts/physx_teacher_datasets/comprehensive_fwd_v1/manifest.json \
   --student-usd artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd \
