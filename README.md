@@ -39,7 +39,7 @@ Isaac Sim can be installed as a pip package inside a conda environment (Python 3
 ### 1. Create a conda environment
 
 ```bash
-conda create -n scenefactory python=3.10 -y
+conda create -n scenefactory python=3.11 -y
 conda activate scenefactory
 ```
 
