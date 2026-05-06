@@ -1,0 +1,859 @@
+{
+  "teacher_dataset_manifest": "/home/yz8733/Github/isaac-rl/artifacts/physx_teacher_datasets/comprehensive_fwd_v1/manifest.json",
+  "student_usd_path": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_assets/vehicle_only_smoke/student_fwd_vehicle.usd",
+  "search_mode": "staged",
+  "optimizer": "cem",
+  "best_config": {
+    "drive_torque_nm": 600.6691602191573,
+    "brake_front_torque_nm": 1090.5125574568192,
+    "brake_rear_torque_nm": 980.6949043152495,
+    "steering_limit_rad": 0.45,
+    "steering_kp_nm_per_rad": 1839.500076084335,
+    "steering_kd_nm_s_per_rad": 110.50037125179703,
+    "steering_effort_limit_nm": 1200.0,
+    "wheel_viscous_friction": 1.647190355504742,
+    "steering_viscous_friction": 1.0,
+    "suspension_viscous_friction": 120.0,
+    "wheel_mass_kg": 37.50688569986249,
+    "wheel_inertia_scale": 1.0942374725850477,
+    "suspension_stiffness_n_m": 1080.8061662786115,
+    "suspension_damping_n_s_m": 2764.260065830346,
+    "chassis_com_height_offset_m": 0.016228270255753584,
+    "lateral_velocity_damping_n_per_mps": 0.0,
+    "yaw_stability_damping_nm_per_rad_s": 10.565695454103768,
+    "surface_friction_scale": {
+      "dry_asphalt": 1.0,
+      "wet_asphalt": 1.0,
+      "gravel": 1.0
+    },
+    "surface_longitudinal_scale": {
+      "dry_asphalt": 0.9445620083441489,
+      "wet_asphalt": 1.2161069687511454,
+      "gravel": 1.1402327029313097
+    },
+    "surface_lateral_scale": {
+      "dry_asphalt": 1.4886481988909024,
+      "wet_asphalt": 0.6070378116304683,
+      "gravel": 0.6279721819730331
+    }
+  },
+  "stages": [
+    {
+      "name": "longitudinal",
+      "description": "Fit drive, brake, wheel damping, and touched-surface friction from straight accel/brake.",
+      "teacher_rollout_names": [
+        "straight_accel_t10pct",
+        "straight_accel_t20pct",
+        "straight_accel_t30pct",
+        "straight_accel_t40pct",
+        "straight_accel_t50pct",
+        "straight_accel_t60pct",
+        "straight_accel_t70pct",
+        "straight_accel_t80pct",
+        "straight_accel_t90pct",
+        "straight_accel_t100pct",
+        "straight_brake_b20pct",
+        "straight_brake_b40pct",
+        "straight_brake_b60pct",
+        "straight_brake_b80pct",
+        "straight_brake_b100pct",
+        "ramp_throttle_up",
+        "ramp_throttle_down"
+      ],
+      "random_trials": 96,
+      "search_window_fraction": null,
+      "search_min_fraction": null,
+      "seed_from_stage": null,
+      "best_trial_name": "sample_025",
+      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/01_longitudinal/trials/sample_025",
+      "best_loss": {
+        "num_frames": 9270.0,
+        "position_xy_mse": 0.38915974419940624,
+        "speed_mse": 0.1751621160989324,
+        "steer_angle_mse": 1.1915279454239165e-05,
+        "suspension_mse": 0.0005583894792929436,
+        "terminal_position_xy_se": 2.6541444915344776,
+        "terminal_speed_se": 0.2856936320960688,
+        "total_loss": 5.293726212504181,
+        "wheel_speed_mse": 12.577844224983785,
+        "yaw_mse": 0.03906446892338174,
+        "yaw_rate_mse": 0.013016686855458965
+      },
+      "best_config": {
+        "drive_torque_nm": 605.1329660570149,
+        "brake_front_torque_nm": 1005.5125574568192,
+        "brake_rear_torque_nm": 944.0116901477044,
+        "steering_limit_rad": 0.5585053606381855,
+        "steering_kp_nm_per_rad": 1600.0,
+        "steering_kd_nm_s_per_rad": 160.0,
+        "steering_effort_limit_nm": 1200.0,
+        "wheel_viscous_friction": 1.771562825454762,
+        "steering_viscous_friction": 1.0,
+        "suspension_viscous_friction": 120.0,
+        "wheel_mass_kg": 39.266070743308894,
+        "wheel_inertia_scale": 1.1152275580412543,
+        "suspension_stiffness_n_m": 0.0,
+        "suspension_damping_n_s_m": 2200.0,
+        "chassis_com_height_offset_m": 0.0,
+        "lateral_velocity_damping_n_per_mps": 0.0,
+        "yaw_stability_damping_nm_per_rad_s": 0.0,
+        "surface_friction_scale": {
+          "dry_asphalt": 1.0,
+          "wet_asphalt": 1.0,
+          "gravel": 1.0
+        },
+        "surface_longitudinal_scale": {
+          "dry_asphalt": 0.9614601566830853,
+          "wet_asphalt": 1.2157847721743242,
+          "gravel": 1.1334891213237748
+        },
+        "surface_lateral_scale": {
+          "dry_asphalt": 1.0,
+          "wet_asphalt": 1.0,
+          "gravel": 1.0
+        }
+      },
+      "search_space": {
+        "drive_torque_nm": [
+          300.0,
+          1400.0
+        ],
+        "brake_front_torque_nm": [
+          500.0,
+          2200.0
+        ],
+        "brake_rear_torque_nm": [
+          200.0,
+          1400.0
+        ],
+        "wheel_viscous_friction": [
+          0.0,
+          6.0
+        ],
+        "wheel_mass_kg": [
+          8.0,
+          60.0
+        ],
+        "wheel_inertia_scale": [
+          0.5,
+          3.0
+        ],
+        "surface_longitudinal_scale.dry_asphalt": [
+          0.5,
+          1.5
+        ],
+        "surface_longitudinal_scale.gravel": [
+          0.4,
+          1.4
+        ],
+        "surface_longitudinal_scale.wet_asphalt": [
+          0.4,
+          1.4
+        ]
+      }
+    },
+    {
+      "name": "steering",
+      "description": "Fit steering response from step, constant, and sine-steer maneuvers.",
+      "teacher_rollout_names": [
+        "step_steer_left_t30pct_s10pct",
+        "step_steer_right_t30pct_s10pct",
+        "step_steer_left_t30pct_s25pct",
+        "step_steer_right_t30pct_s25pct",
+        "step_steer_left_t30pct_s50pct",
+        "step_steer_right_t30pct_s50pct",
+        "step_steer_left_t30pct_s75pct",
+        "step_steer_right_t30pct_s75pct",
+        "step_steer_left_t30pct_s100pct",
+        "step_steer_right_t30pct_s100pct",
+        "step_steer_left_t50pct_s10pct",
+        "step_steer_right_t50pct_s10pct",
+        "step_steer_left_t50pct_s25pct",
+        "step_steer_right_t50pct_s25pct",
+        "step_steer_left_t50pct_s50pct",
+        "step_steer_right_t50pct_s50pct",
+        "step_steer_left_t50pct_s75pct",
+        "step_steer_right_t50pct_s75pct",
+        "step_steer_left_t50pct_s100pct",
+        "step_steer_right_t50pct_s100pct",
+        "step_steer_left_t70pct_s10pct",
+        "step_steer_right_t70pct_s10pct",
+        "step_steer_left_t70pct_s25pct",
+        "step_steer_right_t70pct_s25pct",
+        "step_steer_left_t70pct_s50pct",
+        "step_steer_right_t70pct_s50pct",
+        "step_steer_left_t70pct_s75pct",
+        "step_steer_right_t70pct_s75pct",
+        "step_steer_left_t70pct_s100pct",
+        "step_steer_right_t70pct_s100pct",
+        "step_steer_left_t90pct_s10pct",
+        "step_steer_right_t90pct_s10pct",
+        "step_steer_left_t90pct_s25pct",
+        "step_steer_right_t90pct_s25pct",
+        "step_steer_left_t90pct_s50pct",
+        "step_steer_right_t90pct_s50pct",
+        "step_steer_left_t90pct_s75pct",
+        "step_steer_right_t90pct_s75pct",
+        "step_steer_left_t90pct_s100pct",
+        "step_steer_right_t90pct_s100pct",
+        "const_steer_left_t30pct_s15pct",
+        "const_steer_right_t30pct_s15pct",
+        "const_steer_left_t30pct_s30pct",
+        "const_steer_right_t30pct_s30pct",
+        "const_steer_left_t30pct_s50pct",
+        "const_steer_right_t30pct_s50pct",
+        "const_steer_left_t30pct_s80pct",
+        "const_steer_right_t30pct_s80pct",
+        "const_steer_left_t50pct_s15pct",
+        "const_steer_right_t50pct_s15pct",
+        "const_steer_left_t50pct_s30pct",
+        "const_steer_right_t50pct_s30pct",
+        "const_steer_left_t50pct_s50pct",
+        "const_steer_right_t50pct_s50pct",
+        "const_steer_left_t50pct_s80pct",
+        "const_steer_right_t50pct_s80pct",
+        "const_steer_left_t70pct_s15pct",
+        "const_steer_right_t70pct_s15pct",
+        "const_steer_left_t70pct_s30pct",
+        "const_steer_right_t70pct_s30pct",
+        "const_steer_left_t70pct_s50pct",
+        "const_steer_right_t70pct_s50pct",
+        "const_steer_left_t70pct_s80pct",
+        "const_steer_right_t70pct_s80pct",
+        "sine_steer_t35pct_a15pct_f0p25hz",
+        "sine_steer_t35pct_a15pct_f0p50hz",
+        "sine_steer_t35pct_a15pct_f1p00hz",
+        "sine_steer_t35pct_a15pct_f2p00hz",
+        "sine_steer_t35pct_a30pct_f0p25hz",
+        "sine_steer_t35pct_a30pct_f0p50hz",
+        "sine_steer_t35pct_a30pct_f1p00hz",
+        "sine_steer_t35pct_a30pct_f2p00hz",
+        "sine_steer_t35pct_a50pct_f0p25hz",
+        "sine_steer_t35pct_a50pct_f0p50hz",
+        "sine_steer_t35pct_a50pct_f1p00hz",
+        "sine_steer_t35pct_a50pct_f2p00hz",
+        "sine_steer_t55pct_a15pct_f0p25hz",
+        "sine_steer_t55pct_a15pct_f0p50hz",
+        "sine_steer_t55pct_a15pct_f1p00hz",
+        "sine_steer_t55pct_a15pct_f2p00hz",
+        "sine_steer_t55pct_a30pct_f0p25hz",
+        "sine_steer_t55pct_a30pct_f0p50hz",
+        "sine_steer_t55pct_a30pct_f1p00hz",
+        "sine_steer_t55pct_a30pct_f2p00hz",
+        "sine_steer_t55pct_a50pct_f0p25hz",
+        "sine_steer_t55pct_a50pct_f0p50hz",
+        "sine_steer_t55pct_a50pct_f1p00hz",
+        "sine_steer_t55pct_a50pct_f2p00hz",
+        "sine_steer_t80pct_a15pct_f0p25hz",
+        "sine_steer_t80pct_a15pct_f0p50hz",
+        "sine_steer_t80pct_a15pct_f1p00hz",
+        "sine_steer_t80pct_a15pct_f2p00hz",
+        "sine_steer_t80pct_a30pct_f0p25hz",
+        "sine_steer_t80pct_a30pct_f0p50hz",
+        "sine_steer_t80pct_a30pct_f1p00hz",
+        "sine_steer_t80pct_a30pct_f2p00hz",
+        "sine_steer_t80pct_a50pct_f0p25hz",
+        "sine_steer_t80pct_a50pct_f0p50hz",
+        "sine_steer_t80pct_a50pct_f1p00hz",
+        "sine_steer_t80pct_a50pct_f2p00hz",
+        "chirp_steer_t40pct",
+        "chirp_steer_t65pct",
+        "chirp_steer_t90pct",
+        "trail_brake_left_t60pct_s20pct",
+        "trail_brake_right_t60pct_s20pct",
+        "trail_brake_left_t60pct_s40pct",
+        "trail_brake_right_t60pct_s40pct",
+        "trail_brake_left_t60pct_s70pct",
+        "trail_brake_right_t60pct_s70pct",
+        "trail_brake_left_t80pct_s20pct",
+        "trail_brake_right_t80pct_s20pct",
+        "trail_brake_left_t80pct_s40pct",
+        "trail_brake_right_t80pct_s40pct",
+        "trail_brake_left_t80pct_s70pct",
+        "trail_brake_right_t80pct_s70pct",
+        "trail_brake_left_t100pct_s20pct",
+        "trail_brake_right_t100pct_s20pct",
+        "trail_brake_left_t100pct_s40pct",
+        "trail_brake_right_t100pct_s40pct",
+        "trail_brake_left_t100pct_s70pct",
+        "trail_brake_right_t100pct_s70pct"
+      ],
+      "random_trials": 64,
+      "search_window_fraction": null,
+      "search_min_fraction": null,
+      "seed_from_stage": null,
+      "best_trial_name": "baseline",
+      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/02_steering/trials/baseline",
+      "best_loss": {
+        "num_frames": 63951.0,
+        "position_xy_mse": 2.0320383009915615,
+        "speed_mse": 0.5170221682697826,
+        "steer_angle_mse": 0.0013252995678866679,
+        "suspension_mse": 0.0032909828683126367,
+        "terminal_position_xy_se": 12.0391638495003,
+        "terminal_speed_se": 0.876107287373386,
+        "total_loss": 170.58809864041714,
+        "wheel_speed_mse": 2063.633808946889,
+        "yaw_mse": 0.16830011262785413,
+        "yaw_rate_mse": 185.64079833350726
+      },
+      "best_config": {
+        "drive_torque_nm": 605.1329660570149,
+        "brake_front_torque_nm": 1005.5125574568192,
+        "brake_rear_torque_nm": 944.0116901477044,
+        "steering_limit_rad": 0.5585053606381855,
+        "steering_kp_nm_per_rad": 1600.0,
+        "steering_kd_nm_s_per_rad": 160.0,
+        "steering_effort_limit_nm": 1200.0,
+        "wheel_viscous_friction": 1.771562825454762,
+        "steering_viscous_friction": 1.0,
+        "suspension_viscous_friction": 120.0,
+        "wheel_mass_kg": 39.266070743308894,
+        "wheel_inertia_scale": 1.1152275580412543,
+        "suspension_stiffness_n_m": 0.0,
+        "suspension_damping_n_s_m": 2200.0,
+        "chassis_com_height_offset_m": 0.0,
+        "lateral_velocity_damping_n_per_mps": 0.0,
+        "yaw_stability_damping_nm_per_rad_s": 0.0,
+        "surface_friction_scale": {
+          "dry_asphalt": 1.0,
+          "wet_asphalt": 1.0,
+          "gravel": 1.0
+        },
+        "surface_longitudinal_scale": {
+          "dry_asphalt": 0.9614601566830853,
+          "wet_asphalt": 1.2157847721743242,
+          "gravel": 1.1334891213237748
+        },
+        "surface_lateral_scale": {
+          "dry_asphalt": 1.0,
+          "wet_asphalt": 1.0,
+          "gravel": 1.0
+        }
+      },
+      "search_space": {
+        "steering_limit_rad": [
+          0.15,
+          0.45
+        ],
+        "steering_kp_nm_per_rad": [
+          200.0,
+          5000.0
+        ],
+        "steering_kd_nm_s_per_rad": [
+          20.0,
+          800.0
+        ],
+        "suspension_stiffness_n_m": [
+          0.0,
+          30000.0
+        ],
+        "suspension_damping_n_s_m": [
+          200.0,
+          12000.0
+        ],
+        "chassis_com_height_offset_m": [
+          -0.25,
+          0.25
+        ],
+        "lateral_velocity_damping_n_per_mps": [
+          0.0,
+          12000.0
+        ],
+        "yaw_stability_damping_nm_per_rad_s": [
+          0.0,
+          12000.0
+        ]
+      }
+    },
+    {
+      "name": "surface",
+      "description": "Fit only the surface friction scales for the surfaces touched in the transition maneuver.",
+      "teacher_rollout_names": [
+        "surface_transition_s"
+      ],
+      "random_trials": 48,
+      "search_window_fraction": null,
+      "search_min_fraction": null,
+      "seed_from_stage": null,
+      "best_trial_name": "sample_031",
+      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/03_surface/trials/sample_031",
+      "best_loss": {
+        "num_frames": 600.0,
+        "position_xy_mse": 0.4098901051673287,
+        "yaw_mse": 0.0025474191592878242,
+        "speed_mse": 0.2565398794849295,
+        "yaw_rate_mse": 89.17043624744937,
+        "wheel_speed_mse": 585.2344683038032,
+        "steer_angle_mse": 0.0002971155347383266,
+        "suspension_mse": 0.006648560090427565,
+        "terminal_position_xy_se": 1.2468974032161793,
+        "terminal_speed_se": 1.8989520448850061,
+        "total_loss": 55.34960550196804
+      },
+      "best_config": {
+        "drive_torque_nm": 605.1329660570149,
+        "brake_front_torque_nm": 1005.5125574568192,
+        "brake_rear_torque_nm": 944.0116901477044,
+        "steering_limit_rad": 0.5585053606381855,
+        "steering_kp_nm_per_rad": 1600.0,
+        "steering_kd_nm_s_per_rad": 160.0,
+        "steering_effort_limit_nm": 1200.0,
+        "wheel_viscous_friction": 1.771562825454762,
+        "steering_viscous_friction": 1.0,
+        "suspension_viscous_friction": 120.0,
+        "wheel_mass_kg": 39.266070743308894,
+        "wheel_inertia_scale": 1.1152275580412543,
+        "suspension_stiffness_n_m": 0.0,
+        "suspension_damping_n_s_m": 2200.0,
+        "chassis_com_height_offset_m": 0.0,
+        "lateral_velocity_damping_n_per_mps": 0.0,
+        "yaw_stability_damping_nm_per_rad_s": 0.0,
+        "surface_friction_scale": {
+          "dry_asphalt": 1.0,
+          "wet_asphalt": 1.0,
+          "gravel": 1.0
+        },
+        "surface_longitudinal_scale": {
+          "dry_asphalt": 1.0711196569498094,
+          "wet_asphalt": 1.0667836955802674,
+          "gravel": 1.146847846616406
+        },
+        "surface_lateral_scale": {
+          "dry_asphalt": 1.5,
+          "wet_asphalt": 0.5584082585893586,
+          "gravel": 0.644685809604495
+        }
+      },
+      "search_space": {
+        "surface_longitudinal_scale.dry_asphalt": [
+          0.5,
+          1.5
+        ],
+        "surface_lateral_scale.dry_asphalt": [
+          0.5,
+          1.5
+        ],
+        "surface_longitudinal_scale.gravel": [
+          0.4,
+          1.4
+        ],
+        "surface_lateral_scale.gravel": [
+          0.4,
+          1.4
+        ],
+        "surface_longitudinal_scale.wet_asphalt": [
+          0.4,
+          1.4
+        ],
+        "surface_lateral_scale.wet_asphalt": [
+          0.4,
+          1.4
+        ]
+      }
+    },
+    {
+      "name": "refinement",
+      "description": "Refine the combined parameters across the full suite, but only in a local window around the staged winners.",
+      "teacher_rollout_names": [
+        "straight_accel_t10pct",
+        "straight_accel_t20pct",
+        "straight_accel_t30pct",
+        "straight_accel_t40pct",
+        "straight_accel_t50pct",
+        "straight_accel_t60pct",
+        "straight_accel_t70pct",
+        "straight_accel_t80pct",
+        "straight_accel_t90pct",
+        "straight_accel_t100pct",
+        "straight_brake_b20pct",
+        "straight_brake_b40pct",
+        "straight_brake_b60pct",
+        "straight_brake_b80pct",
+        "straight_brake_b100pct",
+        "ramp_throttle_up",
+        "ramp_throttle_down",
+        "step_steer_left_t30pct_s10pct",
+        "step_steer_right_t30pct_s10pct",
+        "step_steer_left_t30pct_s25pct",
+        "step_steer_right_t30pct_s25pct",
+        "step_steer_left_t30pct_s50pct",
+        "step_steer_right_t30pct_s50pct",
+        "step_steer_left_t30pct_s75pct",
+        "step_steer_right_t30pct_s75pct",
+        "step_steer_left_t30pct_s100pct",
+        "step_steer_right_t30pct_s100pct",
+        "step_steer_left_t50pct_s10pct",
+        "step_steer_right_t50pct_s10pct",
+        "step_steer_left_t50pct_s25pct",
+        "step_steer_right_t50pct_s25pct",
+        "step_steer_left_t50pct_s50pct",
+        "step_steer_right_t50pct_s50pct",
+        "step_steer_left_t50pct_s75pct",
+        "step_steer_right_t50pct_s75pct",
+        "step_steer_left_t50pct_s100pct",
+        "step_steer_right_t50pct_s100pct",
+        "step_steer_left_t70pct_s10pct",
+        "step_steer_right_t70pct_s10pct",
+        "step_steer_left_t70pct_s25pct",
+        "step_steer_right_t70pct_s25pct",
+        "step_steer_left_t70pct_s50pct",
+        "step_steer_right_t70pct_s50pct",
+        "step_steer_left_t70pct_s75pct",
+        "step_steer_right_t70pct_s75pct",
+        "step_steer_left_t70pct_s100pct",
+        "step_steer_right_t70pct_s100pct",
+        "step_steer_left_t90pct_s10pct",
+        "step_steer_right_t90pct_s10pct",
+        "step_steer_left_t90pct_s25pct",
+        "step_steer_right_t90pct_s25pct",
+        "step_steer_left_t90pct_s50pct",
+        "step_steer_right_t90pct_s50pct",
+        "step_steer_left_t90pct_s75pct",
+        "step_steer_right_t90pct_s75pct",
+        "step_steer_left_t90pct_s100pct",
+        "step_steer_right_t90pct_s100pct",
+        "const_steer_left_t30pct_s15pct",
+        "const_steer_right_t30pct_s15pct",
+        "const_steer_left_t30pct_s30pct",
+        "const_steer_right_t30pct_s30pct",
+        "const_steer_left_t30pct_s50pct",
+        "const_steer_right_t30pct_s50pct",
+        "const_steer_left_t30pct_s80pct",
+        "const_steer_right_t30pct_s80pct",
+        "const_steer_left_t50pct_s15pct",
+        "const_steer_right_t50pct_s15pct",
+        "const_steer_left_t50pct_s30pct",
+        "const_steer_right_t50pct_s30pct",
+        "const_steer_left_t50pct_s50pct",
+        "const_steer_right_t50pct_s50pct",
+        "const_steer_left_t50pct_s80pct",
+        "const_steer_right_t50pct_s80pct",
+        "const_steer_left_t70pct_s15pct",
+        "const_steer_right_t70pct_s15pct",
+        "const_steer_left_t70pct_s30pct",
+        "const_steer_right_t70pct_s30pct",
+        "const_steer_left_t70pct_s50pct",
+        "const_steer_right_t70pct_s50pct",
+        "const_steer_left_t70pct_s80pct",
+        "const_steer_right_t70pct_s80pct",
+        "trail_brake_left_t60pct_s20pct",
+        "trail_brake_right_t60pct_s20pct",
+        "trail_brake_left_t60pct_s40pct",
+        "trail_brake_right_t60pct_s40pct",
+        "trail_brake_left_t60pct_s70pct",
+        "trail_brake_right_t60pct_s70pct",
+        "trail_brake_left_t80pct_s20pct",
+        "trail_brake_right_t80pct_s20pct",
+        "trail_brake_left_t80pct_s40pct",
+        "trail_brake_right_t80pct_s40pct",
+        "trail_brake_left_t80pct_s70pct",
+        "trail_brake_right_t80pct_s70pct",
+        "trail_brake_left_t100pct_s20pct",
+        "trail_brake_right_t100pct_s20pct",
+        "trail_brake_left_t100pct_s40pct",
+        "trail_brake_right_t100pct_s40pct",
+        "trail_brake_left_t100pct_s70pct",
+        "trail_brake_right_t100pct_s70pct",
+        "sine_steer_t35pct_a15pct_f0p25hz",
+        "sine_steer_t35pct_a15pct_f0p50hz",
+        "sine_steer_t35pct_a15pct_f1p00hz",
+        "sine_steer_t35pct_a15pct_f2p00hz",
+        "sine_steer_t35pct_a30pct_f0p25hz",
+        "sine_steer_t35pct_a30pct_f0p50hz",
+        "sine_steer_t35pct_a30pct_f1p00hz",
+        "sine_steer_t35pct_a30pct_f2p00hz",
+        "sine_steer_t35pct_a50pct_f0p25hz",
+        "sine_steer_t35pct_a50pct_f0p50hz",
+        "sine_steer_t35pct_a50pct_f1p00hz",
+        "sine_steer_t35pct_a50pct_f2p00hz",
+        "sine_steer_t55pct_a15pct_f0p25hz",
+        "sine_steer_t55pct_a15pct_f0p50hz",
+        "sine_steer_t55pct_a15pct_f1p00hz",
+        "sine_steer_t55pct_a15pct_f2p00hz",
+        "sine_steer_t55pct_a30pct_f0p25hz",
+        "sine_steer_t55pct_a30pct_f0p50hz",
+        "sine_steer_t55pct_a30pct_f1p00hz",
+        "sine_steer_t55pct_a30pct_f2p00hz",
+        "sine_steer_t55pct_a50pct_f0p25hz",
+        "sine_steer_t55pct_a50pct_f0p50hz",
+        "sine_steer_t55pct_a50pct_f1p00hz",
+        "sine_steer_t55pct_a50pct_f2p00hz",
+        "sine_steer_t80pct_a15pct_f0p25hz",
+        "sine_steer_t80pct_a15pct_f0p50hz",
+        "sine_steer_t80pct_a15pct_f1p00hz",
+        "sine_steer_t80pct_a15pct_f2p00hz",
+        "sine_steer_t80pct_a30pct_f0p25hz",
+        "sine_steer_t80pct_a30pct_f0p50hz",
+        "sine_steer_t80pct_a30pct_f1p00hz",
+        "sine_steer_t80pct_a30pct_f2p00hz",
+        "sine_steer_t80pct_a50pct_f0p25hz",
+        "sine_steer_t80pct_a50pct_f0p50hz",
+        "sine_steer_t80pct_a50pct_f1p00hz",
+        "sine_steer_t80pct_a50pct_f2p00hz",
+        "chirp_steer_t40pct",
+        "chirp_steer_t65pct",
+        "chirp_steer_t90pct",
+        "surface_transition_s"
+      ],
+      "random_trials": 64,
+      "search_window_fraction": 0.18,
+      "search_min_fraction": 0.05,
+      "seed_from_stage": null,
+      "best_trial_name": "sample_058",
+      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/04_refinement/trials/sample_058",
+      "best_loss": {
+        "num_frames": 73821.0,
+        "position_xy_mse": 1.7512753464494166,
+        "speed_mse": 0.32325031787572006,
+        "steer_angle_mse": 0.0013567784115850663,
+        "suspension_mse": 0.00223405983424454,
+        "terminal_position_xy_se": 8.98792140021102,
+        "terminal_speed_se": 0.6686867926987312,
+        "total_loss": 150.2038247821366,
+        "wheel_speed_mse": 1871.1061143652498,
+        "yaw_mse": 0.20425885201740474,
+        "yaw_rate_mse": 162.87575012640002
+      },
+      "best_config": {
+        "drive_torque_nm": 560.4177525259835,
+        "brake_front_torque_nm": 1048.6341755289213,
+        "brake_rear_torque_nm": 997.3150246802322,
+        "steering_limit_rad": 0.45,
+        "steering_kp_nm_per_rad": 1839.500076084335,
+        "steering_kd_nm_s_per_rad": 110.50037125179703,
+        "steering_effort_limit_nm": 1200.0,
+        "wheel_viscous_friction": 1.768325012383496,
+        "steering_viscous_friction": 1.0,
+        "suspension_viscous_friction": 120.0,
+        "wheel_mass_kg": 39.557098044416314,
+        "wheel_inertia_scale": 1.0925151063258745,
+        "suspension_stiffness_n_m": 1080.8061662786115,
+        "suspension_damping_n_s_m": 2764.260065830346,
+        "chassis_com_height_offset_m": 0.016228270255753584,
+        "lateral_velocity_damping_n_per_mps": 0.0,
+        "yaw_stability_damping_nm_per_rad_s": 10.565695454103768,
+        "surface_friction_scale": {
+          "dry_asphalt": 1.0,
+          "wet_asphalt": 1.0,
+          "gravel": 1.0
+        },
+        "surface_longitudinal_scale": {
+          "dry_asphalt": 1.05200072107807,
+          "wet_asphalt": 1.0715148005456832,
+          "gravel": 1.16238535121727
+        },
+        "surface_lateral_scale": {
+          "dry_asphalt": 1.4886481988909024,
+          "wet_asphalt": 0.6070378116304683,
+          "gravel": 0.6279721819730331
+        }
+      },
+      "search_space": {
+        "drive_torque_nm": [
+          488.13296605701487,
+          722.1329660570149
+        ],
+        "brake_front_torque_nm": [
+          852.5125574568192,
+          1158.5125574568192
+        ],
+        "brake_rear_torque_nm": [
+          836.0116901477044,
+          1052.0116901477045
+        ],
+        "steering_limit_rad": [
+          0.423,
+          0.45
+        ],
+        "steering_kp_nm_per_rad": [
+          1168.0,
+          2032.0
+        ],
+        "steering_kd_nm_s_per_rad": [
+          89.8,
+          230.2
+        ],
+        "wheel_viscous_friction": [
+          1.231562825454762,
+          2.3115628254547618
+        ],
+        "wheel_mass_kg": [
+          34.586070743308895,
+          43.946070743308894
+        ],
+        "wheel_inertia_scale": [
+          0.8902275580412543,
+          1.3402275580412542
+        ],
+        "suspension_stiffness_n_m": [
+          0.0,
+          2700.0
+        ],
+        "suspension_damping_n_s_m": [
+          1138.0,
+          3262.0
+        ],
+        "chassis_com_height_offset_m": [
+          -0.045,
+          0.045
+        ],
+        "lateral_velocity_damping_n_per_mps": [
+          0.0,
+          1080.0
+        ],
+        "yaw_stability_damping_nm_per_rad_s": [
+          0.0,
+          1080.0
+        ],
+        "surface_longitudinal_scale.dry_asphalt": [
+          0.9811196569498094,
+          1.1611196569498095
+        ],
+        "surface_lateral_scale.dry_asphalt": [
+          1.41,
+          1.5
+        ],
+        "surface_longitudinal_scale.gravel": [
+          1.056847846616406,
+          1.2368478466164061
+        ],
+        "surface_lateral_scale.gravel": [
+          0.554685809604495,
+          0.7346858096044949
+        ],
+        "surface_longitudinal_scale.wet_asphalt": [
+          0.9767836955802675,
+          1.1567836955802675
+        ],
+        "surface_lateral_scale.wet_asphalt": [
+          0.46840825858935864,
+          0.6484082585893586
+        ]
+      }
+    },
+    {
+      "name": "brake_preservation",
+      "description": "Re-anchor straight-line accel/brake distance after joint refinement without reopening steering search.",
+      "teacher_rollout_names": [
+        "straight_accel_t10pct",
+        "straight_accel_t20pct",
+        "straight_accel_t30pct",
+        "straight_accel_t40pct",
+        "straight_accel_t50pct",
+        "straight_accel_t60pct",
+        "straight_accel_t70pct",
+        "straight_accel_t80pct",
+        "straight_accel_t90pct",
+        "straight_accel_t100pct",
+        "straight_brake_b20pct",
+        "straight_brake_b40pct",
+        "straight_brake_b60pct",
+        "straight_brake_b80pct",
+        "straight_brake_b100pct",
+        "ramp_throttle_up",
+        "ramp_throttle_down"
+      ],
+      "random_trials": 48,
+      "search_window_fraction": 0.1,
+      "search_min_fraction": 0.03,
+      "seed_from_stage": "longitudinal",
+      "best_trial_name": "sample_031",
+      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/05_brake_preservation/trials/sample_031",
+      "best_loss": {
+        "num_frames": 9270.0,
+        "position_xy_mse": 0.28289551316064676,
+        "speed_mse": 0.14130995448398656,
+        "steer_angle_mse": 6.908664146620223e-07,
+        "suspension_mse": 0.0005635503071173936,
+        "terminal_position_xy_se": 1.7245459168695303,
+        "terminal_speed_se": 0.2997878886845444,
+        "total_loss": 3.693778779262319,
+        "wheel_speed_mse": 10.571660227270746,
+        "yaw_mse": 0.045199742326095596,
+        "yaw_rate_mse": 0.012408189509107726
+      },
+      "best_config": {
+        "drive_torque_nm": 600.6691602191573,
+        "brake_front_torque_nm": 1090.5125574568192,
+        "brake_rear_torque_nm": 980.6949043152495,
+        "steering_limit_rad": 0.45,
+        "steering_kp_nm_per_rad": 1839.500076084335,
+        "steering_kd_nm_s_per_rad": 110.50037125179703,
+        "steering_effort_limit_nm": 1200.0,
+        "wheel_viscous_friction": 1.647190355504742,
+        "steering_viscous_friction": 1.0,
+        "suspension_viscous_friction": 120.0,
+        "wheel_mass_kg": 37.50688569986249,
+        "wheel_inertia_scale": 1.0942374725850477,
+        "suspension_stiffness_n_m": 1080.8061662786115,
+        "suspension_damping_n_s_m": 2764.260065830346,
+        "chassis_com_height_offset_m": 0.016228270255753584,
+        "lateral_velocity_damping_n_per_mps": 0.0,
+        "yaw_stability_damping_nm_per_rad_s": 10.565695454103768,
+        "surface_friction_scale": {
+          "dry_asphalt": 1.0,
+          "wet_asphalt": 1.0,
+          "gravel": 1.0
+        },
+        "surface_longitudinal_scale": {
+          "dry_asphalt": 0.9445620083441489,
+          "wet_asphalt": 1.2161069687511454,
+          "gravel": 1.1402327029313097
+        },
+        "surface_lateral_scale": {
+          "dry_asphalt": 1.4886481988909024,
+          "wet_asphalt": 0.6070378116304683,
+          "gravel": 0.6279721819730331
+        }
+      },
+      "search_space": {
+        "drive_torque_nm": [
+          550.1329660570149,
+          660.1329660570149
+        ],
+        "brake_front_torque_nm": [
+          920.5125574568192,
+          1090.5125574568192
+        ],
+        "brake_rear_torque_nm": [
+          884.0116901477044,
+          1004.0116901477044
+        ],
+        "wheel_viscous_friction": [
+          1.471562825454762,
+          2.071562825454762
+        ],
+        "wheel_mass_kg": [
+          36.66607074330889,
+          41.866070743308896
+        ],
+        "wheel_inertia_scale": [
+          0.9902275580412543,
+          1.2402275580412543
+        ],
+        "surface_longitudinal_scale.dry_asphalt": [
+          0.9114601566830852,
+          1.0114601566830852
+        ],
+        "surface_longitudinal_scale.gravel": [
+          1.0834891213237747,
+          1.1834891213237748
+        ],
+        "surface_longitudinal_scale.wet_asphalt": [
+          1.1657847721743242,
+          1.2657847721743243
+        ]
+      }
+    }
+  ],
+  "representative_rollout_dir": "/home/yz8733/Github/isaac-rl/artifacts/physx_teacher_datasets/comprehensive_fwd_v1/rollouts/straight_accel_t10pct",
+  "representative_report_html": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/final_report/sysid_report.html",
+  "final_bundle_report_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/final_bundle_report",
+  "final_bundle_rollout_names": [
+    "straight_accel_t10pct",
+    "straight_accel_t20pct",
+    "straight_accel_t30pct"
+  ],
+  "sysid_report_html": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/sysid_report.html"
+}

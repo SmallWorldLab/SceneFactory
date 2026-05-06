@@ -1,0 +1,34 @@
+{
+  "drive_torque_nm": 600.6691602191573,
+  "brake_front_torque_nm": 1090.5125574568192,
+  "brake_rear_torque_nm": 980.6949043152495,
+  "steering_limit_rad": 0.45,
+  "steering_kp_nm_per_rad": 1839.500076084335,
+  "steering_kd_nm_s_per_rad": 110.50037125179703,
+  "steering_effort_limit_nm": 1200.0,
+  "wheel_viscous_friction": 1.647190355504742,
+  "steering_viscous_friction": 1.0,
+  "suspension_viscous_friction": 120.0,
+  "wheel_mass_kg": 37.50688569986249,
+  "wheel_inertia_scale": 1.0942374725850477,
+  "suspension_stiffness_n_m": 1080.8061662786115,
+  "suspension_damping_n_s_m": 2764.260065830346,
+  "chassis_com_height_offset_m": 0.016228270255753584,
+  "lateral_velocity_damping_n_per_mps": 0.0,
+  "yaw_stability_damping_nm_per_rad_s": 10.565695454103768,
+  "surface_friction_scale": {
+    "dry_asphalt": 1.0,
+    "wet_asphalt": 1.0,
+    "gravel": 1.0
+  },
+  "surface_longitudinal_scale": {
+    "dry_asphalt": 0.9445620083441489,
+    "wet_asphalt": 1.2161069687511454,
+    "gravel": 1.1402327029313097
+  },
+  "surface_lateral_scale": {
+    "dry_asphalt": 1.4886481988909024,
+    "wet_asphalt": 0.6070378116304683,
+    "gravel": 0.6279721819730331
+  }
+}

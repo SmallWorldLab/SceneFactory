@@ -44,7 +44,7 @@ Ensure `isaaclab.sh` is on your PATH or note its location.
 ### 2. Clone this repo
 
 ```bash
-git clone https://github.com/YOUR_ORG/SceneFactory.git
+git clone https://github.com/BrainCrackLab/SceneFactory.git
 cd SceneFactory
 ```
 
@@ -123,7 +123,7 @@ python scripts/summarize_2x2_eval.py
 
 ## Vehicle System Identification
 
-The pre-fitted sysid parameters are in `artifacts/student_vehicle_sysid/fwd_v1_staged_cem_anchor_overnight/best_config.json` and are loaded automatically.
+The pre-fitted sysid parameters are in `artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json` and are loaded automatically.
 
 To re-run sysid from scratch:
 
