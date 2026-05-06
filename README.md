@@ -83,21 +83,30 @@ cd SceneFactory
 ### 6. Prepare Waymo scene data
 
 Download the [Waymo Open Motion Dataset](https://waymo.com/open/data/motion/) (requires accepting the Waymo license).
-Place the downloaded `*.tfrecord` files into the designated folder:
+Place the downloaded `*.tfrecord` files into:
 
 ```
 data/waymo_tfrecords/
 ```
 
-Then run the offline extraction pipeline to produce per-scenario JSON files:
+Then run the offline extraction script to produce per-scenario JSON files:
+
+> **Note:** `waymo-open-dataset-tf-2-12-0` does not support Python 3.11 (see [upstream issue](https://github.com/waymo-research/waymo-open-dataset/issues/868)).
+> Run this step in a **separate Python 3.10** environment:
+>
+> ```bash
+> conda create -n waymo-extract python=3.10 -y
+> conda activate waymo-extract
+> pip install tensorflow==2.12.0 waymo-open-dataset-tf-2-12-0 numpy
+> ```
 
 ```bash
-python src/trfc/world_pipeline.py \
+python scripts/convert_waymo_tfrecord_to_json.py \
   --tfrecord-dir data/waymo_tfrecords \
   --output-dir data/processed/waymo_scenes_json
 ```
 
-Processed JSONs will be written to `data/processed/waymo_scenes_json/`, which is already the default `scene_json_dir` in all provided configs — no further changes needed.
+Processed JSONs are written to `data/processed/waymo_scenes_json/`, which is already the default `scene_json_dir` in all provided configs — no further changes needed.
 
 ---
 
@@ -209,6 +218,7 @@ SceneFactory/
 │   ├── student_vehicle_assets/vehicle_student/  # URDF + USD + spec
 │   └── student_vehicle_sysid/                   # Final sysid result
 ├── scripts/
+│   ├── convert_waymo_tfrecord_to_json.py  # TFRecord → scene JSON extractor
 │   ├── summarize_2x2_eval.py
 │   └── generate_weather_eval_configs.py
 └── run_*.sh                           # Paper experiment launchers
