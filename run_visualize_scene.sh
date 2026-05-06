@@ -5,13 +5,9 @@
 #  for illustration / screenshot purposes.
 #
 #  Usage:
-#    bash run_visualize_scene.sh                              # default 4 worlds, GUI — loops until window closed
-#    bash run_visualize_scene.sh --world_count 1             # single world, GUI
-#    bash run_visualize_scene.sh --save_stage_usd            # GUI + export .usda on exit
-#    bash run_visualize_scene.sh --headless --save_stage_usd --sim_steps 1  # headless: build, export .usda, exit
-#
-#  NOTE: --headless alone with steps=0 (the default) loops forever doing nothing.
-#        Always pair --headless with --save_stage_usd --sim_steps 1 for useful output.
+#    bash run_visualize_scene.sh                   # default 4 worlds, GUI
+#    bash run_visualize_scene.sh --world_count 1   # single world
+#    bash run_visualize_scene.sh --save_stage_usd  # GUI + export .usda on exit
 # ============================================================
 set -euo pipefail
 

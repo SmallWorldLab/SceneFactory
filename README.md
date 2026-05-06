@@ -115,8 +115,7 @@ Processed JSONs are written to `data/processed/waymo_scenes_json/`, which is alr
 ### Visualize scenes
 
 ```bash
-bash run_visualize_scene.sh --world_count 4                                    # GUI: opens Isaac Sim viewer, loops until closed
-bash run_visualize_scene.sh --headless --save_stage_usd --sim_steps 1         # headless: build scenes, export .usda, exit
+bash run_visualize_scene.sh --world_count 4
 ```
 
 ### Train (PhysX, dry, 128 unique scenes)
