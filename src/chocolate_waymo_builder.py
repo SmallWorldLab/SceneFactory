@@ -1216,8 +1216,6 @@ class WaymoJsonMiniWorldBuilder:
 
             kept += 1
 
-        print(f"[MiniWorldBuilder] Agents kept={kept} skipped={skipped}")
-
     def respawn_agent_with_goal(
         self,
         *,
