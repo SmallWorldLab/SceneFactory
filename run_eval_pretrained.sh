@@ -23,11 +23,13 @@ COMMON="--invincible --headless --no-use_fabric --device cuda:0"
 V7_CKPT="checkpoints/v7_weather_aware_iter600.pt"
 V8_CKPT="checkpoints/v8_no_weather_iter300.pt"
 
+V8_WET_CFG="configs/scene_factory/generated/eval_v8_sysid4_noweather_model_200_test64_hard_sma2mm.yaml"
+
 for f in "$V7_CKPT" "$V8_CKPT" \
     "configs/scene_factory/generated/eval_v7_sysid4_weather_model_600_test64_dry.yaml" \
     "configs/scene_factory/generated/eval_v8_sysid4_noweather_model_300_test64_dry.yaml" \
     "configs/scene_factory/generated/eval_v7_sysid4_weather_model_600_test64_hard_sma2mm.yaml" \
-    "configs/scene_factory/generated/eval_v8_sysid4_noweather_model_300_test64_hard_sma2mm.yaml"; do
+    "$V8_WET_CFG"; do
   [ -f "$f" ] || { echo "ERROR: missing file: $f"; exit 1; }
 done
 
@@ -64,7 +66,7 @@ PYTHONPATH=. python -u $PYTHON $COMMON \
 echo ""
 echo "[4/4] v8 no-weather baseline — HEAVY WET (SMA, 2.0 mm, mu≈0.001)"
 PYTHONPATH=. python -u $PYTHON $COMMON \
-  --config configs/scene_factory/generated/eval_v8_sysid4_noweather_model_300_test64_hard_sma2mm.yaml \
+  --config "$V8_WET_CFG" \
   --test_mode scene_factory_policy_eval \
   --checkpoint_path "$V8_CKPT"
 
