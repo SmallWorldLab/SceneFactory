@@ -112,6 +112,21 @@ Processed JSONs are written to `data/processed/waymo_scenes_json/`, which is alr
 
 ## Quickstart
 
+### Demo training (recommended starting point)
+
+Exercises the full feature stack — sysid-calibrated PhysX vehicle, weather-to-friction module, real Waymo road geometry — at a scale that fits on a single GPU (~8–10 GB VRAM):
+
+```bash
+bash run_demo_train.sh
+```
+
+This runs **32 worlds × 4 agents** across four weather conditions (dry / light / moderate / heavy rain) for 500 iterations (~30–60 min on an RTX 3090 / A100).
+Logs and checkpoints are saved to `logs/rsl_rl/scene_factory_demo/demo_weather_physx/`.
+
+To ablate the weather module, add `--weather_context_blind true` or edit `observation.weather_context_blind: true` in `configs/scene_factory/demo_weather_physx_train.yaml`.
+
+---
+
 ### Visualize scenes
 
 ```bash
