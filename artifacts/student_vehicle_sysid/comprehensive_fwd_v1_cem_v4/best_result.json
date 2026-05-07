@@ -1,6 +1,6 @@
 {
-  "teacher_dataset_manifest": "/home/yz8733/Github/isaac-rl/artifacts/physx_teacher_datasets/comprehensive_fwd_v1/manifest.json",
-  "student_usd_path": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_assets/vehicle_only_smoke/student_fwd_vehicle.usd",
+  "teacher_dataset_manifest": "/path/to/SceneFactory/artifacts/physx_teacher_datasets/comprehensive_fwd_v1/manifest.json",
+  "student_usd_path": "/path/to/SceneFactory/artifacts/student_vehicle_assets/vehicle_only_smoke/student_fwd_vehicle.usd",
   "search_mode": "staged",
   "optimizer": "cem",
   "best_config": {
@@ -65,7 +65,7 @@
       "search_min_fraction": null,
       "seed_from_stage": null,
       "best_trial_name": "sample_025",
-      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/01_longitudinal/trials/sample_025",
+      "best_trial_output_dir": "/path/to/SceneFactory/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/01_longitudinal/trials/sample_025",
       "best_loss": {
         "num_frames": 9270.0,
         "position_xy_mse": 0.38915974419940624,
@@ -283,7 +283,7 @@
       "search_min_fraction": null,
       "seed_from_stage": null,
       "best_trial_name": "baseline",
-      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/02_steering/trials/baseline",
+      "best_trial_output_dir": "/path/to/SceneFactory/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/02_steering/trials/baseline",
       "best_loss": {
         "num_frames": 63951.0,
         "position_xy_mse": 2.0320383009915615,
@@ -377,7 +377,7 @@
       "search_min_fraction": null,
       "seed_from_stage": null,
       "best_trial_name": "sample_031",
-      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/03_surface/trials/sample_031",
+      "best_trial_output_dir": "/path/to/SceneFactory/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/03_surface/trials/sample_031",
       "best_loss": {
         "num_frames": 600.0,
         "position_xy_mse": 0.4098901051673287,
@@ -601,7 +601,7 @@
       "search_min_fraction": 0.05,
       "seed_from_stage": null,
       "best_trial_name": "sample_058",
-      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/04_refinement/trials/sample_058",
+      "best_trial_output_dir": "/path/to/SceneFactory/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/04_refinement/trials/sample_058",
       "best_loss": {
         "num_frames": 73821.0,
         "position_xy_mse": 1.7512753464494166,
@@ -759,7 +759,7 @@
       "search_min_fraction": 0.03,
       "seed_from_stage": "longitudinal",
       "best_trial_name": "sample_031",
-      "best_trial_output_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/05_brake_preservation/trials/sample_031",
+      "best_trial_output_dir": "/path/to/SceneFactory/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/stages/05_brake_preservation/trials/sample_031",
       "best_loss": {
         "num_frames": 9270.0,
         "position_xy_mse": 0.28289551316064676,
@@ -847,13 +847,13 @@
       }
     }
   ],
-  "representative_rollout_dir": "/home/yz8733/Github/isaac-rl/artifacts/physx_teacher_datasets/comprehensive_fwd_v1/rollouts/straight_accel_t10pct",
-  "representative_report_html": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/final_report/sysid_report.html",
-  "final_bundle_report_dir": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/final_bundle_report",
+  "representative_rollout_dir": "/path/to/SceneFactory/artifacts/physx_teacher_datasets/comprehensive_fwd_v1/rollouts/straight_accel_t10pct",
+  "representative_report_html": "/path/to/SceneFactory/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/final_report/sysid_report.html",
+  "final_bundle_report_dir": "/path/to/SceneFactory/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/final_bundle_report",
   "final_bundle_rollout_names": [
     "straight_accel_t10pct",
     "straight_accel_t20pct",
     "straight_accel_t30pct"
   ],
-  "sysid_report_html": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/sysid_report.html"
+  "sysid_report_html": "/path/to/SceneFactory/artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/sysid_report.html"
 }

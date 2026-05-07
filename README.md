@@ -4,7 +4,7 @@
 
 Built on [NVIDIA Isaac Sim](https://developer.nvidia.com/isaac-sim) and [Isaac Lab](https://github.com/isaac-sim/IsaacLab), SceneFactory represents worlds and agents as batched tensors — vehicle control, observations, rewards, resets, and policy inference are all GPU tensor operations.
 
-> Paper: *SceneFactory: GPU-Accelerated Multi-Agent Driving Simulation with Physics-Based Vehicle Dynamics* (NeurIPS 2026)
+> Paper: *SceneFactory: GPU-Accelerated Multi-Agent Driving Simulation with Physics-Based Vehicle Dynamics* (under review)
 
 ---
 
@@ -76,7 +76,7 @@ pip install rsl-rl-lib==3.1.2
 ### 5. Clone this repo
 
 ```bash
-git clone https://github.com/BrainCrackLab/SceneFactory.git
+git clone https://github.com/[anonymous]/SceneFactory.git
 cd SceneFactory
 ```
 
@@ -243,14 +243,7 @@ SceneFactory/
 
 ## Citation
 
-```bibtex
-@inproceedings{zhu2026scenefactory,
-  title     = {SceneFactory: GPU-Accelerated Multi-Agent Driving Simulation with Physics-Based Vehicle Dynamics},
-  author    = {Zhu, Yicheng and Bian, Zilin},
-  booktitle = {Advances in Neural Information Processing Systems},
-  year      = {2026}
-}
-```
+> Citation information will be provided upon paper acceptance (anonymous submission).
 
 ---
 

@@ -1,9 +1,9 @@
 {
   "robot_root_path": "/World/student_fwd_vehicle",
   "vehicle_root_path": "/student_fwd_vehicle",
-  "urdf_path": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.urdf",
-  "spec_path": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_assets/vehicle_student/student_vehicle_spec.json",
-  "vehicle_usd_path": "/home/yz8733/Github/isaac-rl/artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd",
+  "urdf_path": "/path/to/SceneFactory/artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.urdf",
+  "spec_path": "/path/to/SceneFactory/artifacts/student_vehicle_assets/vehicle_student/student_vehicle_spec.json",
+  "vehicle_usd_path": "/path/to/SceneFactory/artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd",
   "sim_steps": 10,
   "spawn": {
     "x_m": 0.0,
