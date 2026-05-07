@@ -2678,6 +2678,18 @@ def main():
         env = _maybe_wrap_video(env, capture_env=base_env, run_dir=run_dir)
 
     train_cfg = runner_cfg.to_dict()
+    # Strip any keys in train_cfg["algorithm"] that PPO.__init__ doesn't accept.
+    # Newer IsaacLab versions add fields (e.g. "optimizer") to RslRlPpoAlgorithmCfg
+    # that older rsl_rl PPO does not recognise, causing a TypeError at runner init.
+    if "algorithm" in train_cfg:
+        import inspect as _inspect
+        from rsl_rl.algorithms import PPO as _PPO
+        _ppo_params = set(_inspect.signature(_PPO.__init__).parameters.keys()) - {"self", "policy"}
+        _unknown = {k: v for k, v in train_cfg["algorithm"].items() if k not in _ppo_params and k != "class_name"}
+        if _unknown:
+            print(f"[INFO][SceneFactory] Dropping unknown PPO alg_cfg keys (rsl_rl version mismatch): {list(_unknown.keys())}", flush=True)
+            for k in _unknown:
+                train_cfg["algorithm"].pop(k)
     policy_type = str(_cfg_value(file_cfg, "policy", "type", "mlp")).strip().lower().replace("-", "_")
     if policy_type == "late_fusion":
         _register_scene_factory_custom_policy_classes()
