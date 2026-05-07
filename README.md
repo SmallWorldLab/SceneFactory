@@ -127,6 +127,25 @@ To ablate the weather module, add `--weather_context_blind true` or edit `observ
 
 ---
 
+### Evaluate pre-trained policies
+
+Two trained checkpoints are included in `checkpoints/`:
+
+| File | Description |
+|---|---|
+| `checkpoints/v7_weather_aware_iter600.pt` | Weather-aware policy — conditions on friction token; paper Table 3 |
+| `checkpoints/v8_no_weather_iter300.pt` | No-weather baseline — friction token masked; same architecture |
+
+Run all four conditions (v7 vs v8 × dry vs heavy-wet) with one command:
+
+```bash
+bash run_eval_pretrained.sh
+```
+
+Expected runtime: ~5 min per condition. Results are written to timestamped directories.
+
+---
+
 ### Visualize scenes
 
 ```bash
@@ -159,7 +178,7 @@ bash run_bicycle_train.sh --headless
 
 ## Reproducing Paper Results
 
-All paper experiments use pre-trained checkpoints. Download them from [TODO: add release link] and place them under `runs/`.
+All paper experiments use the pre-trained checkpoints in `checkpoints/`. No download required — they are included in this repository.
 
 | Experiment | Script |
 |---|---|
