@@ -1,0 +1,152 @@
+# SceneFactory demo training config — weather-aware PhysX vehicle.
+#
+# Purpose: lightweight end-to-end training run that exercises the full
+# SceneFactory feature stack on a single GPU with ~10 GB VRAM:
+#   • Articulated PhysX vehicle with CEM system-identified dynamics
+#   • Weather-to-friction module (4 conditions: dry / light / moderate / heavy rain)
+#   • Real Waymo road geometry for observations and rewards
+#   • Late-fusion actor-critic policy conditioned on weather context
+#
+# Scale vs. paper experiments:
+#   Paper (v7/v8): 256 worlds × 16 agents = 4096 agent slots, road_k=350
+#   This demo:      32 worlds ×  4 agents =  128 agent slots, road_k=64
+#
+# Expected VRAM: ~8–10 GB on an RTX 3090 / A100 40 GB.
+# Expected wall-clock: ~30–60 min to 500 iterations on a single A100.
+#
+# To train:
+#   conda run -n isaac-pytorch python -u \
+#     -m src.train_student_vehicle_goal_multiagent_rsl_rl \
+#     --config configs/scene_factory/demo_weather_physx_train.yaml \
+#     --headless
+#
+# The weather observation vector o_weather = [h_w/1.0, 1_AC, 1_SMA, 1_OGFC]
+# varies across worlds (see demo_weather_scenes.yaml), so the policy must
+# learn to condition its driving style on the current friction regime.
+# Compare with weather_context_blind: true to ablate the weather module.
+
+env:
+  num_envs: 32                   # 32 parallel worlds (vs 256 in paper)
+  num_agents_per_env: 4          # 4 agents per world (vs 16 in paper)
+  observation_mode: "choco_reference"
+  env_spacing: 400.0
+  spawn_height_m: 1.2
+  spawn_yaw_noise_rad: 0.0
+  ground_mode: "plane"
+  use_scene_factory_roads: true
+  reset_mode: "teleport_only"
+  start_radius_m: 0.0
+  agent_spawn_circle_radius_m: 0.0
+  agent_spawn_jitter_m: 0.0
+  episode_length_s: 45.0
+  goal_radius_min_m: 5.0
+  goal_radius_max_m: 30.0
+  goal_reached_threshold_m: 3.0
+  fall_height_threshold_m: 0.0
+  bad_tilt_gravity_threshold: -0.15
+  max_distance_from_origin_m: 100.0
+  agent_neighbor_obs_scale_m: 100.0
+  agent_collision_warmup_steps: 24
+  replicate_physics: false
+  clone_in_fabric: "false"
+  # dynamics_mode: "physx"  (default — uses sysid-calibrated articulated vehicle)
+
+scene_factory:
+  config_path: "configs/scene_factory/demo_weather_scenes.yaml"
+  world_index: 0
+  world_selection_mode: "random_envs"
+  random_world_seed: 42
+
+observation:
+  weather_context_enable: true      # agent sees [h_w/1.0, 1_AC, 1_SMA, 1_OGFC]
+  # weather_context_blind: true     # uncomment to ablate: always receives dry-AC token
+  road_points_enable: true
+  road_points_k: 64                 # 64 road points (vs 350 in paper); reduces VRAM
+  road_points_radius_m: 10.0
+  road_points_type_norm: 20.0
+  road_points_mode: "road_running"
+  road_points_include_dirs: true
+  neighbor_enable: true
+  neighbor_k: 8                     # 8 neighbour slots (vs 24 in paper)
+  neighbor_include_ttc: true
+  neighbor_include_index: false
+  neighbor_ttc_max_s: 10.0
+  timing_print_enable: false
+  timing_print_every_n: 32
+
+timing:
+  step_log_enable: true
+  step_print_enable: false
+  step_print_every_n: 128
+  step_cuda_sync_enable: false
+
+reward:
+  mode: "choco_baseline"
+  goal_bonus: 60.0
+  lane_center_enable: false
+  lane_forbidden_enable: true
+  lane_forbidden_penalty: -20.0
+  collision_penalty: -6.0
+  crash_penalty: -10.0
+  choco_offroad_penalty: -0.5
+  choco_idle_penalty_enable: true
+  choco_idle_penalty_per_step: 0.06
+  choco_idle_speed_threshold_mps: 2.5
+  choco_geom_lane_enable: true
+  choco_geom_lane_per_step: 0.08
+  choco_geom_lane_tolerance_m: 1.75
+  choco_geom_lane_heading_weight: 0.8
+  choco_geom_lane_min_alignment: 0.35
+  choco_geom_route_progress_weight: 4.0
+  choco_geom_offroad_enable: true
+  choco_geom_offroad_lateral_threshold_m: 3.25
+  choco_geom_offroad_distance_threshold_m: 6.0
+  choco_ttc_penalty_enable: true
+  choco_ttc_penalty_alpha: 0.10
+  choco_ttc_penalty_max: 0.35
+  choco_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_penalty_enable: true
+  choco_road_edge_ttc_penalty_alpha: 0.07
+  choco_road_edge_ttc_penalty_max: 0.40
+  choco_road_edge_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_hard_min_ttc: 0.5
+  choco_road_edge_ttc_radius_m: 40.0
+
+policy:
+  type: "late_fusion"
+  ego_layers: [64, 64]
+  road_layers: [96, 96]
+  vehicle_layers: [96, 96]
+  shared_layers: [128, 64]
+  last_layer_dim_pi: 64
+  last_layer_dim_vf: 64
+  activation: "relu"
+  dropout: 0.0
+  pool: "max"
+
+assets:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
+
+runner:
+  log_dir: "logs/rsl_rl"
+  seed: 42
+  experiment_name: "scene_factory_demo"
+  run_name: "demo_weather_physx"
+  shared_policy_mode: "agent_slots"
+  max_iterations: 500             # ~30–60 min; increase to 3000+ for a full run
+  num_steps_per_env: 64           # rollout length per iteration
+  save_interval: 50
+  learning_rate: 3.0e-4
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  entropy_coef: 3.0e-5
+  clip_param: 0.15
+  desired_kl: 0.01
+  gamma: 0.99
+  gae_lambda: 0.98
+  value_loss_coef: 1.0
+
+app:
+  device: "cuda:0"
+  rl_device: "cuda:0"

@@ -1,0 +1,100 @@
+# Demo scene-factory world config — 32 worlds, 8 unique Waymo scenes × 4 weather conditions.
+#
+# Purpose: lightweight config for collaborators to verify the full SceneFactory
+# feature stack (PhysX vehicle, weather-to-friction module, multi-world road
+# geometry) without requiring the full 256-world setup.
+#
+# Weather variety across 4 groups of 8 worlds:
+#   Worlds  0-7  : dry Asphalt Concrete (AC)   — baseline, high friction
+#   Worlds  8-15 : light rain SMA, 0.3 mm film  — mild wet
+#   Worlds 16-23 : moderate rain SMA, 0.5 mm    — moderate wet
+#   Worlds 24-31 : heavy rain SMA, 2.0 mm       — near-hydroplaning (mu ~ 1e-3)
+#
+# The policy's weather observation vector o_weather = [h_w/1.0, 1_AC, 1_SMA, 1_OGFC]
+# differs across the four groups, so the agent must condition on friction context.
+
+io:
+  scene_json_dir: data/processed/waymo_scenes_json
+
+world:
+  root_container: /World/SceneFactoryWorlds
+  world_count: 32
+  grid_cols: 8
+  rows: 4
+  world_size_m: [200.0, 200.0]
+  padding_m: 200.0
+  base_z_m: 0.0
+  bounds_size_m: 200.0
+  origin_mode: center
+  origin_center_mode: mean
+  assignment_fill_mode: random_fill
+  assignment_fill_seed: 2024
+  assignments:
+  # ── Group 1: dry Asphalt Concrete ─────────────────────────────────────────
+  - scene_json: scene_000000.json
+    friction: {road_type: AC, precip_type: clear, precip_intensity_mmph: 0.0, water_film_mm: 0.0}
+  - scene_json: scene_000002.json
+    friction: {road_type: AC, precip_type: clear, precip_intensity_mmph: 0.0, water_film_mm: 0.0}
+  - scene_json: scene_000003.json
+    friction: {road_type: AC, precip_type: clear, precip_intensity_mmph: 0.0, water_film_mm: 0.0}
+  - scene_json: scene_000006.json
+    friction: {road_type: AC, precip_type: clear, precip_intensity_mmph: 0.0, water_film_mm: 0.0}
+  - scene_json: scene_000011.json
+    friction: {road_type: AC, precip_type: clear, precip_intensity_mmph: 0.0, water_film_mm: 0.0}
+  - scene_json: scene_000014.json
+    friction: {road_type: AC, precip_type: clear, precip_intensity_mmph: 0.0, water_film_mm: 0.0}
+  - scene_json: scene_000016.json
+    friction: {road_type: AC, precip_type: clear, precip_intensity_mmph: 0.0, water_film_mm: 0.0}
+  - scene_json: scene_000017.json
+    friction: {road_type: AC, precip_type: clear, precip_intensity_mmph: 0.0, water_film_mm: 0.0}
+  # ── Group 2: light rain, Stone Mastic Asphalt ────────────────────────────
+  - scene_json: scene_000000.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 2.0, water_film_mm: 0.3}
+  - scene_json: scene_000002.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 2.0, water_film_mm: 0.3}
+  - scene_json: scene_000003.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 2.0, water_film_mm: 0.3}
+  - scene_json: scene_000006.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 2.0, water_film_mm: 0.3}
+  - scene_json: scene_000011.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 2.0, water_film_mm: 0.3}
+  - scene_json: scene_000014.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 2.0, water_film_mm: 0.3}
+  - scene_json: scene_000016.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 2.0, water_film_mm: 0.3}
+  - scene_json: scene_000017.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 2.0, water_film_mm: 0.3}
+  # ── Group 3: moderate rain, Stone Mastic Asphalt ─────────────────────────
+  - scene_json: scene_000000.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 5.0, water_film_mm: 0.5}
+  - scene_json: scene_000002.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 5.0, water_film_mm: 0.5}
+  - scene_json: scene_000003.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 5.0, water_film_mm: 0.5}
+  - scene_json: scene_000006.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 5.0, water_film_mm: 0.5}
+  - scene_json: scene_000011.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 5.0, water_film_mm: 0.5}
+  - scene_json: scene_000014.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 5.0, water_film_mm: 0.5}
+  - scene_json: scene_000016.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 5.0, water_film_mm: 0.5}
+  - scene_json: scene_000017.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 5.0, water_film_mm: 0.5}
+  # ── Group 4: heavy rain, Stone Mastic Asphalt (near-hydroplaning) ─────────
+  - scene_json: scene_000000.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 20.0, water_film_mm: 2.0}
+  - scene_json: scene_000002.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 20.0, water_film_mm: 2.0}
+  - scene_json: scene_000003.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 20.0, water_film_mm: 2.0}
+  - scene_json: scene_000006.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 20.0, water_film_mm: 2.0}
+  - scene_json: scene_000011.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 20.0, water_film_mm: 2.0}
+  - scene_json: scene_000014.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 20.0, water_film_mm: 2.0}
+  - scene_json: scene_000016.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 20.0, water_film_mm: 2.0}
+  - scene_json: scene_000017.json
+    friction: {road_type: SMA, precip_type: rain, precip_intensity_mmph: 20.0, water_film_mm: 2.0}
