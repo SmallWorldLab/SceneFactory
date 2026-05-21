@@ -1,0 +1,30 @@
+# workzone_demo.yaml
+# Configuration for the workzone taper-zone visualization demo.
+# Generates multiple Isaac Lab mini-worlds, each with a straight 2-lane road
+# and a randomized taper-zone cone layout closing the right lane.
+
+world:
+  num_worlds: 6          # number of independent workzone layouts to show
+  seed: 42               # master RNG seed (each world gets seed + world_index)
+  road_length_m: 200.0   # length of straight road segment per world
+  grid_cols: 3           # worlds arranged in a grid: cols × ceil(num_worlds/cols)
+  world_spacing_x_m: 230.0  # X gap between world columns (> road_length)
+  world_spacing_y_m: 25.0   # Y gap between world rows (> road width)
+  sim_steps: 0           # 0 = run until window is closed; >0 = fixed steps then exit
+
+road:
+  lane_width_m: 3.7      # standard US lane width
+  num_lanes: 2           # total lanes (right lane gets the workzone)
+  shoulder_width_m: 1.0  # extra width outside outermost edge line
+
+# Workzone taper randomization bounds (overrides workzone_scene_generator defaults)
+workzone:
+  taper_length_range_m: [20.0, 50.0]   # [min, max] approach taper length
+  cone_spacing_range_m: [3.0, 8.0]     # [min, max] inter-cone spacing
+  cone_lateral_jitter_m: 0.25          # max lateral jitter per cone
+  workzone_length_range_m: [20.0, 40.0] # [min, max] closed-lane box length
+
+viewer:
+  eye: [0.0, -280.0, 200.0]   # camera position (bird's-eye, slightly tilted)
+  lookat: [0.0, 0.0, 0.0]     # camera look-at target
+  light_intensity: 3000.0      # dome light intensity (lux)

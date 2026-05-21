@@ -508,7 +508,7 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     tunable_config_json: str = _default_tunable_config_json()
 
     spawn_height_m: float = 1.6
-    ground_mode: str = "plane"
+    ground_mode: str = "cuboid"  # "plane" removed: infinite GroundPlane is shared and cannot be per-env
     use_scene_factory_roads: bool = False
     scene_factory_config_path: str = "configs/scene_factory/multiworld_scene.yaml"
     scene_factory_world_index: int = 0
@@ -1105,9 +1105,17 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 config=self._tunable_config,
             )
 
-        _spawn_ground("/World/ground", _dry_ground_material_cfg(self._tunable_config), mode=self.cfg.ground_mode)
-        if self.cfg.use_scene_factory_roads and str(self.cfg.ground_mode).strip().lower() == "plane":
-            _hide_ground_visuals("/World/ground")
+        # Spawn ground inside env_0's subtree so Isaac Lab's cloner replicates
+        # it into every env independently.  An infinite shared GroundPlane at
+        # /World/ground is incompatible with per-world physics isolation; a
+        # finite cuboid per env is the correct Isaac Lab pattern.
+        _per_env_ground_path = self.scene.env_prim_paths[0] + "/Ground"
+        _spawn_ground(_per_env_ground_path, _dry_ground_material_cfg(self._tunable_config), mode="cuboid")
+        if self.cfg.use_scene_factory_roads:
+            # Hide the ground cuboid visual before cloning so every cloned env
+            # inherits the invisible state — the SceneFactory visual floor
+            # renders on top anyway.
+            _hide_ground_visuals(_per_env_ground_path)
 
         self.scene.clone_environments(copy_from_source=False)
         if self.cfg.use_scene_factory_roads:
@@ -1115,7 +1123,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._build_scene_factory_worlds(stage)
             self._initialize_lane_touch_metadata(stage)
         if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+            # Ground is now per-env (inside each env's subtree), so it is
+            # already isolated by env collision groups.  No global path needed.
+            self.scene.filter_collisions(global_prim_paths=[])
         for agent_id, vehicle in spawned_vehicles.items():
             # Register scene entities after cloning to match Isaac Lab's direct MARL task setup.
             self.scene.articulations[agent_id] = vehicle
@@ -3386,9 +3396,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         yaw_by_agent = self._compute_yaw_by_agent(root_quat_w)
         pairwise_ttc_s, max_drac_by_agent = self._compute_pairwise_vehicle_ttc_s(root_pos_w, yaw_by_agent, root_lin_vel_w)
         geom_lane_types = torch.tensor(self.cfg.reward_choco_geom_lane_types, dtype=torch.long, device=self.device)
-        geom_lane_mask = self._lane_touch_valid & torch.isin(self._lane_touch_types, geom_lane_types)
+        geom_lane_mask = self._lane_touch_valid.to(self.device) & torch.isin(self._lane_touch_types.to(self.device), geom_lane_types)
         road_edge_types = torch.tensor(self.cfg.reward_choco_geom_road_edge_types, dtype=torch.long, device=self.device)
-        road_edge_mask = self._lane_touch_valid & torch.isin(self._lane_touch_types, road_edge_types)
+        road_edge_mask = self._lane_touch_valid.to(self.device) & torch.isin(self._lane_touch_types.to(self.device), road_edge_types)
         self._sync_timing_device()
         reward_shared_ms = (perf_counter() - reward_shared_start) * 1000.0
 

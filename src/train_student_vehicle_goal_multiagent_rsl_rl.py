@@ -397,6 +397,33 @@ parser.add_argument(
     default=float(_cfg_value(file_cfg, "test", "random_od_max_travel_m", 60.0)),
     help="Maximum travel distance for randomly sampled OD pairs.",
 )
+parser.add_argument(
+    "--random_steer_test_steering_min",
+    type=float,
+    default=float(_cfg_value(file_cfg, "test", "steering_min", -1.0)),
+    help="Minimum random steering command for scene_factory_multiworld_random_steer_test. "
+         "Use a small magnitude (e.g. -0.1) for a gentle-curve / straight-line speed test.",
+)
+parser.add_argument(
+    "--random_steer_test_steering_max",
+    type=float,
+    default=float(_cfg_value(file_cfg, "test", "steering_max", 1.0)),
+    help="Maximum random steering command for scene_factory_multiworld_random_steer_test. "
+         "Use a small magnitude (e.g. 0.1) for a gentle-curve / straight-line speed test.",
+)
+parser.add_argument(
+    "--random_steer_test_settle_steps",
+    type=int,
+    default=int(_cfg_value(file_cfg, "test", "settle_steps", 24)),
+    help="Steps with zero throttle at episode start before the steer test begins driving. "
+         "Increase (e.g. 48) to let suspension fully settle before recording speed.",
+)
+parser.add_argument(
+    "--random_steer_test_drive_steps",
+    type=int,
+    default=int(_cfg_value(file_cfg, "test", "drive_steps", 600)),
+    help="Steps with full throttle after settle phase. Default 600 (~10s). Use 300 for a 6s run matching teacher rollout length.",
+)
 parser.add_argument("--env_spacing", type=float, default=float(_cfg_value(file_cfg, "env", "env_spacing", 18.0)), help="Spacing between vectorized environments.")
 parser.add_argument("--start_radius_m", type=float, default=float(_cfg_value(file_cfg, "env", "start_radius_m", 0.5)), help="Shared per-world spawn offset radius.")
 parser.add_argument(
@@ -938,12 +965,12 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
         _cfg_value(file_cfg, "test", "post_collision_steering", 0.0)
     )
     cfg.collision_test_post_collision_brake = float(_cfg_value(file_cfg, "test", "post_collision_brake", 1.0))
-    cfg.random_steer_test_settle_steps = int(_cfg_value(file_cfg, "test", "settle_steps", 24))
-    cfg.random_steer_test_drive_steps = int(_cfg_value(file_cfg, "test", "drive_steps", 600))
+    cfg.random_steer_test_settle_steps = int(args_cli.random_steer_test_settle_steps)
+    cfg.random_steer_test_drive_steps = int(args_cli.random_steer_test_drive_steps)
     cfg.random_steer_test_throttle = float(_cfg_value(file_cfg, "test", "throttle", 1.0))
     cfg.random_steer_test_brake = float(_cfg_value(file_cfg, "test", "brake", 0.0))
-    cfg.random_steer_test_steering_min = float(_cfg_value(file_cfg, "test", "steering_min", -1.0))
-    cfg.random_steer_test_steering_max = float(_cfg_value(file_cfg, "test", "steering_max", 1.0))
+    cfg.random_steer_test_steering_min = float(args_cli.random_steer_test_steering_min)
+    cfg.random_steer_test_steering_max = float(args_cli.random_steer_test_steering_max)
     cfg.random_steer_test_steering_hold_steps = int(_cfg_value(file_cfg, "test", "steering_hold_steps", 12))
     cfg.random_steer_test_seed = int(_cfg_value(file_cfg, "test", "seed", 123))
     cfg.capture_camera_enabled = bool(args_cli.video)
@@ -1024,9 +1051,6 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
             print("[INFO][SceneFactory] scene_factory_collision_test enables Fabric for headless vehicle video capture.")
         cfg.sim.use_fabric = True if bool(args_cli.video) else bool(args_cli.use_fabric)
     elif cfg.test_mode == "scene_factory_multiworld_random_steer_test":
-        if not cfg.use_scene_factory_roads:
-            print("[INFO][SceneFactory] scene_factory_multiworld_random_steer_test enables SceneFactory roads.")
-        cfg.use_scene_factory_roads = True
         if bool(args_cli.video) and not bool(args_cli.use_fabric):
             print(
                 "[INFO][SceneFactory] scene_factory_multiworld_random_steer_test enables Fabric "
@@ -1320,6 +1344,36 @@ def _build_resolved_config(
     }
 
 
+def _get_git_info() -> dict:
+    """Return git commit hash and dirty-status for the repo containing this file."""
+    import subprocess
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        dirty_files = subprocess.check_output(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return {"commit": commit, "dirty": bool(dirty_files), "dirty_files": dirty_files.splitlines()}
+    except Exception as exc:  # noqa: BLE001
+        return {"commit": None, "dirty": None, "dirty_files": [], "error": str(exc)}
+
+
+def _write_outcome(run_dir: Path, *, status: str, wall_time_s: float, checkpoints: list[str], error: str | None = None) -> None:
+    """Write outcome.json after a run completes or crashes."""
+    payload = {
+        "status": status,           # "success" | "error" | "interrupted"
+        "wall_time_s": round(wall_time_s, 2),
+        "checkpoints": checkpoints,
+        "error": error,
+    }
+    (run_dir / "outcome.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    print(f"[INFO][SceneFactory] Outcome written to {run_dir / 'outcome.json'} (status={status})", flush=True)
+
+
 def _write_run_metadata(run_dir: Path, env_cfg: StudentVehicleMultiAgentGoalEnvCfg, runner_cfg: RslRlOnPolicyRunnerCfg):
     (run_dir / "params").mkdir(parents=True, exist_ok=True)
     resolved_cfg = _build_resolved_config(env_cfg, runner_cfg)
@@ -1333,6 +1387,7 @@ def _write_run_metadata(run_dir: Path, env_cfg: StudentVehicleMultiAgentGoalEnvC
     payload = {
         "config_path": str(Path(args_cli.config).expanduser().resolve()),
         "command": sys.orig_argv,
+        "git": _get_git_info(),
         "env_cfg": {
             "num_envs": env_cfg.scene.num_envs,
             "num_agents_per_env": env_cfg.num_agents_per_env,
@@ -2172,6 +2227,12 @@ def _run_scene_factory_multiworld_random_steer_test(env: StudentVehicleMultiAgen
     worlds_with_collision: set[int] = set()
     lane_types_touched_global: set[int] = set()
     current_steering = torch.zeros((env._num_agents, env.num_envs), dtype=torch.float32, device=env.device)
+    # Physics sanity accumulators — collected every step for the summary
+    _phys_speeds_all: list[float] = []          # planar speed samples from all agents/envs/steps
+    _phys_z_all: list[float] = []               # root Z samples
+    _phys_max_speed = 0.0
+    _phys_min_z = float("inf")
+    _phys_max_z = float("-inf")
 
     with metrics_path.open("w", encoding="utf-8") as handle:
         for step in range(total_steps):
@@ -2234,10 +2295,17 @@ def _run_scene_factory_multiworld_random_steer_test(env: StudentVehicleMultiAgen
                     root_lin_vel_w = vehicle.data.root_lin_vel_w[env_idx]
                     lane_types = list(lane_touch_types_by_agent.get(agent_id, [[]])[env_idx])
                     lane_types_touched_global.update(int(t) for t in lane_types)
+                    spd = float(torch.linalg.norm(root_lin_vel_w[:2]).item())
+                    z = float(root_pos_w[2].item())
+                    _phys_speeds_all.append(spd)
+                    _phys_z_all.append(z)
+                    _phys_max_speed = max(_phys_max_speed, spd)
+                    _phys_min_z = min(_phys_min_z, z)
+                    _phys_max_z = max(_phys_max_z, z)
                     env_record["agents"][agent_id] = {
                         "root_pos_w": [float(x) for x in root_pos_w.detach().cpu().tolist()],
                         "root_lin_vel_w": [float(x) for x in root_lin_vel_w.detach().cpu().tolist()],
-                        "planar_speed_mps": float(torch.linalg.norm(root_lin_vel_w[:2]).item()),
+                        "planar_speed_mps": spd,
                         "goal_distance_m": float(env._current_goal_distance[agent_idx, env_idx].item()),
                         "collision_force_n": float(collision_force_by_agent[agent_id][env_idx].item()),
                         "lane_touch_types": lane_types,
@@ -2266,13 +2334,31 @@ def _run_scene_factory_multiworld_random_steer_test(env: StudentVehicleMultiAgen
         "metrics_path": str(metrics_path),
         "video_path": str(video_path) if bool(args_cli.video) else "",
         "config_path": str(Path(args_cli.config).expanduser().resolve()),
+        # --- Physics sanity block ---
+        # These numbers let you verify that vehicle dynamics are plausible without
+        # needing to watch the sim:
+        #   max_planar_speed_mps: should be ~15-25 m/s at full throttle (not 0, not 300)
+        #   mean_planar_speed_mps: should be well above 0 during the drive phase
+        #   root_z_min_m / root_z_max_m: should be near spawn_height_m, not drifting meters
+        #   root_z_range_m: large range => vehicle is bouncing or flying; near-zero => grounded
+        "physics_sanity": {
+            "max_planar_speed_mps": round(_phys_max_speed, 3),
+            "mean_planar_speed_mps": round(sum(_phys_speeds_all) / max(1, len(_phys_speeds_all)), 3),
+            "root_z_min_m": round(_phys_min_z, 4) if _phys_min_z != float("inf") else None,
+            "root_z_max_m": round(_phys_max_z, 4) if _phys_max_z != float("-inf") else None,
+            "root_z_range_m": round(_phys_max_z - _phys_min_z, 4) if _phys_speeds_all else None,
+            "speed_samples": int(len(_phys_speeds_all)),
+        },
     }
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(
         f"[INFO][SceneFactory] {test_mode_name} finished. "
         f"world_collision_count={summary['world_collision_count']} "
         f"max_force_n={summary['max_collision_force_n']:.2f} "
-        f"lane_types={summary['lane_types_touched_global']}",
+        f"lane_types={summary['lane_types_touched_global']} | "
+        f"physics: max_speed={summary['physics_sanity']['max_planar_speed_mps']} m/s "
+        f"mean_speed={summary['physics_sanity']['mean_planar_speed_mps']} m/s "
+        f"z_range={summary['physics_sanity']['root_z_range_m']} m",
         flush=True,
     )
 
@@ -2713,17 +2799,29 @@ def main():
         runner.load(str(resume_path), load_optimizer=True)
         print(f"[INFO] Resumed at iteration {runner.current_learning_iteration}", flush=True)
 
+    _outcome_status = "success"
+    _outcome_error: str | None = None
     try:
         if eval_test_mode:
             _run_scene_factory_policy_eval(base_env, env, runner, run_dir)
         else:
             runner.learn(num_learning_iterations=int(runner_cfg.max_iterations), init_at_random_ep_len=True)
+    except KeyboardInterrupt:
+        _outcome_status = "interrupted"
+        raise
+    except Exception as _exc:
+        _outcome_status = "error"
+        _outcome_error = f"{type(_exc).__name__}: {_exc}"
+        raise
     finally:
+        _wall = time.time() - start_time
+        _checkpoints = sorted(str(p) for p in run_dir.glob("model_*.pt"))
+        _write_outcome(run_dir, status=_outcome_status, wall_time_s=_wall, checkpoints=_checkpoints, error=_outcome_error)
         env.close()
         if eval_test_mode:
-            print(f"[INFO] Policy eval finished in {time.time() - start_time:.2f}s")
+            print(f"[INFO] Policy eval finished in {_wall:.2f}s")
         else:
-            print(f"[INFO] Training finished in {time.time() - start_time:.2f}s")
+            print(f"[INFO] Training finished in {_wall:.2f}s")
 
 
 if __name__ == "__main__":

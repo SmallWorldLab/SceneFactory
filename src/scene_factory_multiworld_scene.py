@@ -564,7 +564,9 @@ def _build_scene(args_cli: argparse.Namespace, cfg: dict[str, Any], *, output_di
         load_tunable_config(tunable_config_json) if tunable_config_json else StudentTunableConfig()
     )
 
-    _spawn_ground("/World/ground", _dry_ground_material_cfg(tunable_config), mode="plane")
+    # Standalone visualizer — single non-cloned stage, shared ground is acceptable here.
+    # Multi-env training uses per-env ground inside /World/envs/env_N/Ground instead.
+    _spawn_ground("/World/ground", _dry_ground_material_cfg(tunable_config), mode="cuboid")
 
     world_specs = prepare_stage_world_specs(cfg)
     _build_roads_only(stage=stage, cfg=cfg, json_paths=[spec.scene_json_path for spec in world_specs])
