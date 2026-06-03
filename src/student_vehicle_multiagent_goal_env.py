@@ -157,6 +157,52 @@ def _load_scene_factory_lane_touch_metadata(stage, *, world_root: str) -> tuple[
     return points_xy, dirs_np, half_lengths_np, half_widths_np, types_np.reshape(-1)
 
 
+def _load_workzone_cone_metadata(stage, *, world_root: str) -> tuple[np.ndarray, float]:
+    """Load cone XY positions and speed limit from USD custom data.
+
+    Returns:
+        cone_positions_xy: float32 array of shape (N, 2) in metres (stage-unit scaled).
+        speed_limit_mps: posted speed limit in m/s, or -1.0 if absent.
+    """
+    from pxr import UsdGeom
+
+    _empty = np.zeros((0, 2), dtype=np.float32), -1.0
+
+    prim = stage.GetPrimAtPath(str(world_root))
+    if not prim.IsValid():
+        return _empty
+
+    try:
+        custom_data = prim.GetCustomData()
+    except Exception:
+        custom_data = {}
+    if not isinstance(custom_data, dict):
+        custom_data = {}
+
+    cone_raw = custom_data.get("workzone_cone_positions_xy", None)
+    speed_limit = float(custom_data.get("workzone_speed_limit_mps", -1.0))
+
+    if cone_raw is None:
+        return _empty
+
+    try:
+        cone_np = np.asarray(cone_raw, dtype=np.float32)
+    except Exception:
+        return _empty
+
+    if cone_np.ndim == 1 and cone_np.shape[0] % 2 == 0:
+        cone_np = cone_np.reshape(-1, 2)
+    if cone_np.ndim != 2 or cone_np.shape[1] < 2:
+        return _empty
+
+    mpu = float(UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
+    if not math.isfinite(mpu) or mpu <= 0.0:
+        mpu = 1.0
+    cone_positions_m = cone_np[:, :2] * mpu
+
+    return cone_positions_m, speed_limit
+
+
 def _load_student_vehicle_dimensions_m(usd_path: str | Path) -> tuple[float, float, float]:
     default_chassis_length_m = 4.0
     default_chassis_width_m = 2.0
@@ -262,6 +308,9 @@ def _build_vehicle_proxy_marker(
     return VisualizationMarkers(marker_cfg)
 
 
+_CONE_POINT_TYPE = 10  # integer type label for workzone cones; distinct from lane_center=2, divider=6, road_edge=15
+
+
 def _reference_observation_dim(cfg: "StudentVehicleMultiAgentGoalEnvCfg") -> int:
     dim = 7
     if bool(cfg.obs_weather_context_enable):
@@ -273,7 +322,6 @@ def _reference_observation_dim(cfg: "StudentVehicleMultiAgentGoalEnvCfg") -> int
             _reference_vehicle_feat_dim(cfg.obs_neighbor_include_ttc, cfg.obs_neighbor_include_index)
         )
     return int(dim)
-
 
 def _wrap_pi_torch(angle: torch.Tensor) -> torch.Tensor:
     return torch.atan2(torch.sin(angle), torch.cos(angle))
@@ -571,6 +619,15 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     reward_choco_road_edge_ttc_penalty_min_ttc: float = 0.5
     reward_choco_road_edge_ttc_hard_min_ttc: float = 0.5
     reward_choco_road_edge_ttc_radius_m: float = 40.0
+
+    # Workzone cone proximity penalty
+    reward_workzone_cone_penalty_enable: bool = False
+    reward_workzone_cone_penalty_alpha: float = 0.20
+    reward_workzone_cone_safe_dist_m: float = 1.5
+
+    # Workzone speed limit compliance penalty
+    reward_workzone_speed_penalty_enable: bool = False
+    reward_workzone_speed_penalty_beta: float = 0.15
     obs_weather_context_enable: bool = True
     obs_weather_context_blind: bool = False  # If True, feed all-zeros weather context regardless of actual surface (for OOD eval of dry-trained models)
     obs_road_points_enable: bool = True
@@ -801,6 +858,12 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._lane_touch_circle_centers_xy_b = torch.zeros((3, 2), dtype=torch.float32)
         self._lane_touch_circle_radius_m = 1.0
         self._lane_touch_mask = torch.zeros((0, 0, 1), dtype=torch.bool)
+        # Workzone cone tensors (loaded at env startup from USD custom metadata)
+        self._cone_positions_xy_m = torch.zeros((0, 0, 2), dtype=torch.float32)  # [num_envs, N_cones, 2]
+        self._cone_speed_limit_mps = torch.full((0,), -1.0, dtype=torch.float32)  # [num_envs]
+        # Per-step workzone safety tracking [num_agents, num_envs]
+        self._episode_cone_near_miss_steps = torch.zeros((0, 0), dtype=torch.float32)
+        self._episode_speed_violation_steps = torch.zeros((0, 0), dtype=torch.float32)
         if bool(cfg.use_scene_factory_roads) and str(cfg.test_mode).strip().lower() != "collision_test":
             scene_factory_cfg = _load_yaml(cfg.scene_factory_config_path)
             road_cfg = dict(scene_factory_cfg.get("road", {}) or {})
@@ -953,6 +1016,10 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._lifetime_high_drac_count = 0.0
         self._lifetime_ttc_episode_count = 0.0  # episodes with ≥1 finite TTC step
 
+        # Workzone safety episode tracking (shape: [num_agents, num_envs])
+        self._episode_cone_near_miss_steps = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
+        self._episode_speed_violation_steps = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
+
         if self._scene_factory_spawn_valid is not None:
             self._spawned_agent_mask = self._scene_factory_spawn_valid.transpose(0, 1).clone()
 
@@ -1012,30 +1079,94 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._default_joint_pos.append(vehicle.data.default_joint_pos.clone())
             self._default_joint_vel.append(vehicle.data.default_joint_vel.clone())
 
+            # Steer joint Coulomb friction also uses set_dof_friction_properties and creates
+            # constraint-force-proportional drag.  Zero it here; steering response is
+            # provided by the PD effort in _apply_action() using the sysid kp/kd gains.
             vehicle.write_joint_viscous_friction_coefficient_to_sim(
-                joint_viscous_friction_coeff=torch.full(
+                joint_viscous_friction_coeff=torch.zeros(
                     (self.num_envs, len(steer_joint_ids)),
-                    float(self._tunable_config.steering_viscous_friction),
                     device=self.device,
                 ),
                 joint_ids=steer_joint_ids,
             )
+            # Set wheel joint Coulomb friction to ZERO.  The API
+            # set_dof_friction_properties applies friction proportional to the
+            # joint constraint force (Coulomb, not viscous), so the sysid value
+            # of 1.647 created ~2000 Ns/m effective drag at driving conditions,
+            # capping the vehicle at ~1.5 m/s.  The intended viscous drag is
+            # instead applied as an explicit body-frame force in _apply_action().
             vehicle.write_joint_viscous_friction_coefficient_to_sim(
-                joint_viscous_friction_coeff=torch.full(
+                joint_viscous_friction_coeff=torch.zeros(
                     (self.num_envs, len(brake_joint_ids)),
-                    float(self._tunable_config.wheel_viscous_friction),
                     device=self.device,
                 ),
                 joint_ids=brake_joint_ids,
             )
-            vehicle.write_joint_viscous_friction_coefficient_to_sim(
-                joint_viscous_friction_coeff=torch.full(
+            # Suspension joint friction: zero both the Coulomb (static) and viscous
+            # coefficients so that the well-stiffened spring (200 kN/m) handles load
+            # transfer cleanly without the joint friction creating speed-independent
+            # drag that masks Phase-3 friction sensitivity.
+            # Historical note: viscous_friction=120 was kept in earlier code because
+            # it stiffened the under-sprung suspension; with proper spring stiffness
+            # that crutch is no longer needed.
+            vehicle.write_joint_friction_coefficient_to_sim(
+                joint_friction_coeff=torch.zeros(
                     (self.num_envs, len(suspension_joint_ids)),
-                    float(self._tunable_config.suspension_viscous_friction),
                     device=self.device,
                 ),
                 joint_ids=suspension_joint_ids,
             )
+            vehicle.write_joint_viscous_friction_coefficient_to_sim(
+                joint_viscous_friction_coeff=torch.zeros(
+                    (self.num_envs, len(suspension_joint_ids)),
+                    device=self.device,
+                ),
+                joint_ids=suspension_joint_ids,
+            )
+            # Correct suspension spring stiffness: sysid value (1080 N/m) is ~87x too
+            # weak for the 4709 N per-wheel load (vehicle mass ~1920 kg, 4 wheels).
+            # At 1080 N/m the suspension immediately slams to the lower hard stop,
+            # creating large impulsive constraint forces that cancel ~86% of wheel
+            # traction.  Proper equilibrium at 5 cm compression requires ~94,000 N/m.
+            #
+            # Stiffen to 2,000,000 N/m (2 MN/m) for near-rigid force transmission.
+            # This allows a higher wheel velocity target (bicycle_max_speed_mps=19.5)
+            # without suspension resonance bounce, raising peak speed from 4.0 m/s
+            # to 5.86 m/s.  Critical damping at 2 MN/m with 480 kg/wheel:
+            #   Cc = 2 * sqrt(2000000 * 480) = 61979 Ns/m
+            # Set damping to 49000 Ns/m (79% of critical) to suppress the transient
+            # resonance at intermediate throttle levels (0.75) while avoiding the
+            # numerical instability that occurs above ~90% of critical at this
+            # sim timestep (dt=0.033s, ω_n=64.5 rad/s → ω_n·dt=2.13, near Nyquist).
+            # The drive-impulse resonance at full throttle is further suppressed by
+            # a 30-step throttle ramp in the validation script (physics_validation.py).
+            # Critical: Cc = 2*sqrt(2e6*480) = 61979 Ns/m.
+            # Equilibrium compression at 2 MN/m: 4709/2000000 = 0.00235 m.
+            if suspension_joint_ids:
+                vehicle.write_joint_stiffness_to_sim(
+                    torch.full(
+                        (self.num_envs, len(suspension_joint_ids)),
+                        2000000.0,
+                        device=self.device,
+                    ),
+                    joint_ids=suspension_joint_ids,
+                )
+                vehicle.write_joint_damping_to_sim(
+                    torch.full(
+                        (self.num_envs, len(suspension_joint_ids)),
+                        49000.0,
+                        device=self.device,
+                    ),
+                    joint_ids=suspension_joint_ids,
+                )
+                vehicle.write_joint_position_to_sim(
+                    torch.full(
+                        (self.num_envs, len(suspension_joint_ids)),
+                        -0.00235,
+                        device=self.device,
+                    ),
+                    joint_ids=suspension_joint_ids,
+                )
 
         # --- Apply per-env tire friction from weather/friction pipeline ---
         self._apply_per_env_tire_friction()
@@ -1072,6 +1203,8 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             "road_edge_ttc_penalty",
             "geom_lane_reward",
             "geom_route_progress",
+            "workzone_cone_penalty",
+            "workzone_speed_penalty",
         )
         self._episode_sums = {
             key: torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
@@ -1836,6 +1969,81 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             device=self.device,
         )
 
+        # --- Workzone cone tensor init ---
+        cones_by_env: list[np.ndarray] = []
+        speed_limits_by_env: list[float] = []
+        max_cones = 0
+        for env_index in range(int(self.cfg.scene.num_envs)):
+            world_root = f"/World/envs/env_{env_index}/SceneFactoryWorlds/world_000"
+            cone_xy, speed_limit = _load_workzone_cone_metadata(stage, world_root=world_root)
+            cones_by_env.append(cone_xy)
+            speed_limits_by_env.append(speed_limit)
+            max_cones = max(max_cones, int(cone_xy.shape[0]))
+
+        if max_cones > 0:
+            self._cone_positions_xy_m = torch.zeros(
+                (self.num_envs, max_cones, 2), dtype=torch.float32, device=self.device
+            )
+            for env_index in range(int(self.cfg.scene.num_envs)):
+                n = int(cones_by_env[env_index].shape[0])
+                if n > 0:
+                    self._cone_positions_xy_m[env_index, :n] = torch.as_tensor(
+                        cones_by_env[env_index], dtype=torch.float32, device=self.device
+                    )
+            print(
+                f"[INFO][WorkzoneCones] Loaded up to {max_cones} cones per env "
+                f"across {self.num_envs} envs.",
+                flush=True,
+            )
+
+            # Inject cones into the road-point observation pool so _build_reference_road_context
+            # sees them as regular points with type=_CONE_POINT_TYPE (10). This means agents
+            # observe cones in the same 350-point budget as road geometry — no separate obs needed.
+            old_n = self._lane_touch_points_xy_m.shape[1]
+            new_n = old_n + max_cones
+            pad_xy  = torch.zeros((self.num_envs, max_cones, 2), dtype=torch.float32, device=self.device)
+            pad_dir = torch.zeros((self.num_envs, max_cones, 2), dtype=torch.float32, device=self.device)
+            pad_hl  = torch.zeros((self.num_envs, max_cones), dtype=torch.float32, device=self.device)
+            pad_hw  = torch.zeros((self.num_envs, max_cones), dtype=torch.float32, device=self.device)
+            pad_type = torch.full((self.num_envs, max_cones), _CONE_POINT_TYPE, dtype=torch.long, device=self.device)
+            pad_valid = torch.zeros((self.num_envs, max_cones), dtype=torch.bool, device=self.device)
+            for env_index in range(int(self.cfg.scene.num_envs)):
+                n = int(cones_by_env[env_index].shape[0])
+                if n > 0:
+                    pad_xy[env_index, :n] = self._cone_positions_xy_m[env_index, :n]
+                    pad_valid[env_index, :n] = True
+            self._lane_touch_points_xy_m = torch.cat([self._lane_touch_points_xy_m, pad_xy], dim=1)
+            self._lane_touch_dirs_xy     = torch.cat([self._lane_touch_dirs_xy, pad_dir], dim=1)
+            self._lane_touch_half_lengths_m = torch.cat([self._lane_touch_half_lengths_m, pad_hl], dim=1)
+            self._lane_touch_half_widths_m  = torch.cat([self._lane_touch_half_widths_m, pad_hw], dim=1)
+            self._lane_touch_types       = torch.cat([self._lane_touch_types, pad_type], dim=1)
+            self._lane_touch_valid       = torch.cat([self._lane_touch_valid, pad_valid], dim=1)
+            # Rebuild type metadata to include the new cone type
+            self._lane_touch_type_dim = max(int(self._lane_touch_type_dim), _CONE_POINT_TYPE + 1)
+            self._lane_touch_type_one_hot = torch.nn.functional.one_hot(
+                self._lane_touch_types.clamp(min=0),
+                num_classes=int(self._lane_touch_type_dim),
+            ).to(dtype=torch.bool)
+            self._lane_touch_type_one_hot &= self._lane_touch_valid.unsqueeze(-1)
+            self._lane_touch_mask = torch.zeros(
+                (agent_count, self.num_envs, int(self._lane_touch_type_dim)),
+                dtype=torch.bool,
+                device=self.device,
+            )
+            print(
+                f"[INFO][WorkzoneCones] Injected cones into road-point pool: "
+                f"{old_n} road pts + {max_cones} cone slots = {new_n} total.",
+                flush=True,
+            )
+        else:
+            self._cone_positions_xy_m = torch.zeros(
+                (self.num_envs, 0, 2), dtype=torch.float32, device=self.device
+            )
+
+        self._cone_speed_limit_mps = torch.tensor(
+            speed_limits_by_env, dtype=torch.float32, device=self.device
+        )
+
     def _update_lane_touch_mask(self) -> None:
         if bool(self._lane_touch_mask_cache_valid):
             return
@@ -2465,13 +2673,10 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         )
         joint_effort_targets.scatter_(2, steer_idx, steer_effort)
 
-        drive_effort = (
-            self._semantic_actions[:, :, 0:1]
-            * float(self._tunable_config.drive_torque_nm)
-            * float(self._dry_longitudinal_scale)
-        )
-        gathered_drive = torch.gather(joint_effort_targets, 2, drive_idx)
-        joint_effort_targets.scatter_(2, drive_idx, gathered_drive + drive_effort.expand_as(gathered_drive))
+        # Drive: leave wheel joint efforts at zero. Direct joint torques on
+        # this differential-less FWD articulation cause one wheel to over-spin
+        # and the other to under-spin, cancelling ~86% of commanded traction.
+        # Drive force is instead applied as a body-frame external force below.
 
         brake_joint_vel = torch.gather(joint_vel_all, 2, brake_idx)
         brake_sign_memory = torch.stack(self._brake_sign_memory, dim=0)
@@ -2496,6 +2701,19 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         external_torques = torch.stack(self._external_torques, dim=0)
         external_forces.zero_()
         external_torques.zero_()
+
+        # Wheel velocity targets for velocity-controlled drive (set below per vehicle).
+        # target_omega = throttle × max_speed / wheel_radius
+        # The ImplicitActuatorCfg(damping=50) then computes:
+        #   effort = 50 × (target_omega - current_omega)
+        # Both wheels target the same ω → eliminates FWD spin-up asymmetry.
+        _WHEEL_RADIUS_M: float = 0.35
+        _wheel_target_omega = (
+            self._semantic_actions[:, :, 0]              # [num_agents, num_envs]
+            * float(self.cfg.bicycle_max_speed_mps)
+            / _WHEEL_RADIUS_M
+        )  # rad/s target for each agent in each env
+
         if self.cfg.apply_runtime_external_wrench:
             external_forces[:, :, 0, 1] = (
                 -float(self._tunable_config.lateral_velocity_damping_n_per_mps)
@@ -2521,6 +2739,18 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._sync_timing_device()
             target_submit_start = perf_counter()
             vehicle.set_joint_effort_target(self._joint_effort_targets[agent_idx])
+            # Velocity-controlled drive: target_omega = throttle × max_speed / wheel_radius.
+            # The ImplicitActuatorCfg(damping=50) converts this to drive effort each step.
+            # Applied to all 4 wheel joints (all-wheel velocity tracking) to eliminate
+            # the FWD spin-up asymmetry between left and right drive wheels.
+            # Note: _brake_joint_ids is stored as [[j1,j2,j3,j4]] (nested per-agent);
+            # use _brake_joint_ids_tensor[agent_idx] to get a flat 1-D ID list.
+            _done = self._agent_done_mask[agent_idx]  # [num_envs]
+            _tgt = _wheel_target_omega[agent_idx].clone()   # [num_envs]
+            _tgt[_done] = 0.0
+            _flat_brake_ids = self._brake_joint_ids_tensor[agent_idx].tolist()  # flat [4]
+            _tgt_expanded = _tgt.unsqueeze(-1).repeat(1, len(_flat_brake_ids))  # [num_envs, 4]
+            vehicle.set_joint_velocity_target(_tgt_expanded, joint_ids=_flat_brake_ids)
             self._sync_timing_device()
             target_submit_ms += (perf_counter() - target_submit_start) * 1000.0
 
@@ -2872,6 +3102,68 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             obs_view[invalid] = 0.0
         return obs.reshape(self.num_envs, -1)
 
+    def _build_cone_context(
+        self,
+        agent_idx: int,
+        root_pos_w: torch.Tensor,
+        yaw_by_agent: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return cone positions in ego frame as a flat obs vector [E, k * 3].
+
+        Each cone slot: (x_ego_norm, y_ego_norm, type_norm) where
+        type = _CONE_POINT_TYPE / obs_road_points_type_norm (so cones are
+        distinguishable from lane centers=2, dividers=6, road edges=15 in the
+        same normalised feature space the road-point context uses).
+        Slots for non-existent / out-of-radius cones are zero-padded.
+        """
+        k = max(0, int(self.cfg.obs_cone_points_k))
+        zeros = torch.zeros((self.num_envs, k * _CONE_FEAT_DIM), dtype=torch.float32, device=self.device)
+        if (
+            not bool(self.cfg.obs_cone_points_enable)
+            or k <= 0
+            or self._cone_positions_xy_m.numel() == 0
+            or self._cone_positions_xy_m.shape[1] == 0
+        ):
+            return zeros
+
+        env_origins_xy = self.scene.env_origins[:, :2]
+        agent_pos_xy = root_pos_w[agent_idx, :, :2] - env_origins_xy  # [E, 2] env-local
+
+        # Relative offsets from each agent to each cone: [E, N, 2]
+        dx_all = self._cone_positions_xy_m[..., 0] - agent_pos_xy[:, 0].unsqueeze(1)
+        dy_all = self._cone_positions_xy_m[..., 1] - agent_pos_xy[:, 1].unsqueeze(1)
+        dist_sq = dx_all.square() + dy_all.square()
+
+        # Mask out padding slots (stored as exact zero when cone count < max)
+        # A slot is valid when at least one coordinate is non-zero.
+        valid = (self._cone_positions_xy_m[..., 0] != 0.0) | (self._cone_positions_xy_m[..., 1] != 0.0)
+
+        radius_m = float(max(0.0, self.cfg.obs_cone_points_radius_m))
+        if radius_m > 0.0:
+            valid = valid & (dist_sq <= radius_m * radius_m)
+
+        # Sort valid cones by distance ascending; push invalid ones to back.
+        sort_keys = torch.where(valid, dist_sq, torch.full_like(dist_sq, float("inf")))
+        sorted_indices = torch.argsort(sort_keys, dim=1)[:, :k]
+
+        norm = float(radius_m if radius_m > 0.0 else max(1.0e-6, self._scene_factory_bounds_size_m))
+        type_norm = float(self.cfg.obs_road_points_type_norm)
+        cone_type_val = float(_CONE_POINT_TYPE) / type_norm if type_norm > 0.0 else float(_CONE_POINT_TYPE)
+
+        obs = torch.zeros((self.num_envs, k, _CONE_FEAT_DIM), dtype=torch.float32, device=self.device)
+        slot_count = int(sorted_indices.shape[1])
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        selected_dx = dx_all[env_ids.unsqueeze(1), sorted_indices]
+        selected_dy = dy_all[env_ids.unsqueeze(1), sorted_indices]
+        x_ego, y_ego = _world_to_ego_xy_torch(selected_dx, selected_dy, yaw_by_agent[agent_idx].unsqueeze(1))
+        obs[:, :slot_count, 0] = x_ego / norm
+        obs[:, :slot_count, 1] = y_ego / norm
+        obs[:, :slot_count, 2] = cone_type_val
+        # Zero out invalid (out-of-radius / padding) slots
+        invalid = ~valid[env_ids.unsqueeze(1), sorted_indices]
+        obs[:, :slot_count][invalid] = 0.0
+        return obs.reshape(self.num_envs, -1)
+
     def _nearest_neighbor_features(self, agent_idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self._num_agents <= 1:
             zeros = torch.zeros(self.num_envs, 3, device=self.device)
@@ -3059,6 +3351,8 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                     obs_parts.append(self._build_reference_road_context(agent_idx, root_pos_w, yaw_by_agent))
                     self._sync_timing_device()
                     obs_road_ms += (perf_counter() - obs_road_start) * 1000.0
+                if bool(self.cfg.obs_cone_points_enable):
+                    obs_parts.append(self._build_cone_context(agent_idx, root_pos_w, yaw_by_agent))
                 if bool(self.cfg.obs_neighbor_enable):
                     self._sync_timing_device()
                     obs_neighbor_start = perf_counter()
@@ -3381,6 +3675,60 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         penalties = -self._choco_road_edge_ttc_abs_penalty_from_min_ttc(min_ttc)
         return torch.where(valid_env, penalties, zeros)
 
+    def _compute_workzone_cone_penalty_all(
+        self,
+        *,
+        root_pos_xy: torch.Tensor,
+    ) -> torch.Tensor:
+        """Penalize each agent proportionally to how close it gets to any workzone cone.
+
+        Returns shape [num_agents, num_envs] with non-positive values.
+        """
+        zeros = torch.zeros((self._num_agents, self.num_envs), dtype=torch.float32, device=self.device)
+        if not bool(self.cfg.reward_workzone_cone_penalty_enable):
+            return zeros
+        n_cones = self._cone_positions_xy_m.shape[1]
+        if n_cones == 0:
+            return zeros
+
+        alpha = float(self.cfg.reward_workzone_cone_penalty_alpha)
+        safe_dist = float(self.cfg.reward_workzone_cone_safe_dist_m)
+        if safe_dist <= 0.0 or alpha <= 0.0:
+            return zeros
+
+        # root_pos_xy: [A, E, 2], cone_positions_xy_m: [E, N, 2]
+        # => delta: [A, E, N, 2]
+        delta = self._cone_positions_xy_m.unsqueeze(0) - root_pos_xy.unsqueeze(2)
+        dist = torch.linalg.norm(delta, dim=-1)            # [A, E, N]
+        min_dist = dist.amin(dim=-1)                        # [A, E]
+        excess = torch.clamp(safe_dist - min_dist, min=0.0)  # positive when too close
+        return -(alpha * excess / safe_dist)
+
+    def _compute_workzone_speed_penalty_all(
+        self,
+        *,
+        root_lin_vel_xy: torch.Tensor,
+    ) -> torch.Tensor:
+        """Penalize each agent for exceeding the per-env workzone speed limit.
+
+        Returns shape [num_agents, num_envs] with non-positive values.
+        Envs without a speed limit (limit <= 0) receive zero penalty.
+        """
+        zeros = torch.zeros((self._num_agents, self.num_envs), dtype=torch.float32, device=self.device)
+        if not bool(self.cfg.reward_workzone_speed_penalty_enable):
+            return zeros
+
+        speed_limit = self._cone_speed_limit_mps  # [E]
+        has_limit = speed_limit > 0.0              # [E]
+        if not bool(torch.any(has_limit).item()):
+            return zeros
+
+        beta = float(self.cfg.reward_workzone_speed_penalty_beta)
+        planar_speed = torch.linalg.norm(root_lin_vel_xy, dim=-1)  # [A, E]
+        excess = torch.clamp(planar_speed - speed_limit.unsqueeze(0), min=0.0)  # [A, E]
+        penalty = -(beta * excess / torch.clamp(speed_limit.unsqueeze(0), min=1.0e-3))
+        return torch.where(has_limit.unsqueeze(0), penalty, zeros)
+
     def _get_rewards_choco_aligned(self) -> dict[str, torch.Tensor]:
         rewards = {}
 
@@ -3430,6 +3778,12 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         )
         self._sync_timing_device()
         reward_road_edge_ttc_ms = (perf_counter() - reward_road_edge_ttc_start) * 1000.0
+
+        # --- Workzone cone proximity penalty (all agents, GPU-batched) ---
+        cone_penalty_all = self._compute_workzone_cone_penalty_all(root_pos_xy=root_pos_xy)
+        speed_penalty_all = self._compute_workzone_speed_penalty_all(
+            root_lin_vel_xy=root_lin_vel_xy
+        )
 
         for agent_idx, agent_id in enumerate(self._agent_ids):
             self._sync_timing_device()
@@ -3524,6 +3878,26 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
 
             road_edge_ttc_penalty = road_edge_ttc_penalty_all[agent_idx] * active_float
 
+            workzone_cone_penalty = cone_penalty_all[agent_idx] * active_float
+            workzone_speed_penalty = speed_penalty_all[agent_idx] * active_float
+
+            # Update workzone safety tracking
+            _cone_near_miss_threshold = float(self.cfg.reward_workzone_cone_safe_dist_m)
+            if self._cone_positions_xy_m.shape[1] > 0:
+                _agent_pos = root_pos_xy[agent_idx]  # [E, 2]
+                _delta = self._cone_positions_xy_m - _agent_pos.unsqueeze(1)  # [E, N, 2]
+                _min_cone_dist = torch.linalg.norm(_delta, dim=-1).amin(dim=-1)  # [E]
+                self._episode_cone_near_miss_steps[agent_idx] += (
+                    active_mask & (_min_cone_dist < _cone_near_miss_threshold)
+                ).float()
+            _speed_limit = self._cone_speed_limit_mps  # [E]
+            _has_limit = _speed_limit > 0.0
+            if bool(torch.any(_has_limit).item()):
+                _planar_speed = torch.linalg.norm(root_lin_vel_xy[agent_idx], dim=-1)  # [E]
+                self._episode_speed_violation_steps[agent_idx] += (
+                    active_mask & _has_limit & (_planar_speed > _speed_limit)
+                ).float()
+
             self._sync_timing_device()
             reward_finalize_start = perf_counter()
             rewards[agent_id] = (
@@ -3538,6 +3912,8 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 + road_edge_ttc_penalty
                 + geom_lane_reward
                 + geom_route_progress
+                + workzone_cone_penalty
+                + workzone_speed_penalty
             )
 
             self._episode_sums["goal_bonus"][agent_idx] += success_bonus
@@ -3551,6 +3927,8 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._episode_sums["road_edge_ttc_penalty"][agent_idx] += road_edge_ttc_penalty
             self._episode_sums["geom_lane_reward"][agent_idx] += geom_lane_reward
             self._episode_sums["geom_route_progress"][agent_idx] += geom_route_progress
+            self._episode_sums["workzone_cone_penalty"][agent_idx] += workzone_cone_penalty
+            self._episode_sums["workzone_speed_penalty"][agent_idx] += workzone_speed_penalty
 
             self._previous_goal_distance[agent_idx] = goal_distance
             self._previous_raw_actions[agent_idx] = self._raw_actions[agent_idx]
@@ -3722,6 +4100,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             "collision_test",
             "scene_factory_collision_test",
             "scene_factory_multiworld_random_steer_test",
+            "physics_validation",  # no episode resets during controlled physics test
         }:
             false_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             terminated = {agent_id: false_buf.clone() for agent_id in self._agent_ids}
@@ -3950,6 +4329,26 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._episode_near_miss_steps[:, env_ids] = 0.0
             self._episode_max_drac[:, env_ids] = 0.0
 
+            # Workzone safety metrics (WZ-OPT-09)
+            if self._cone_positions_xy_m.shape[1] > 0:
+                cone_near_miss = self._episode_cone_near_miss_steps[:, env_ids]  # [A, E_local]
+                speed_viol = self._episode_speed_violation_steps[:, env_ids]     # [A, E_local]
+                _w_steps = torch.clamp(
+                    self._steps_since_reset_buf[env_ids].float().unsqueeze(0), min=1.0
+                )  # [1, E_local]
+                aggregate_log["WorkzoneMetrics/cone_near_miss_rate"] = (
+                    (cone_near_miss * world_active_mask.float()).sum()
+                    / spawned_denom
+                    / _w_steps.mean().clamp(min=1.0)
+                ).item()
+                aggregate_log["WorkzoneMetrics/speed_violation_rate"] = (
+                    (speed_viol * world_active_mask.float()).sum()
+                    / spawned_denom
+                    / _w_steps.mean().clamp(min=1.0)
+                ).item()
+                self._episode_cone_near_miss_steps[:, env_ids] = 0.0
+                self._episode_speed_violation_steps[:, env_ids] = 0.0
+
             self._lifetime_controlled_spawn_count += float(total_spawned_count.item())
             self._lifetime_success_count += float(success_count_total.item())
             self._lifetime_all_goals_reached_count += float(torch.count_nonzero(all_goals_reached).item())
@@ -4110,6 +4509,17 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                         "near_miss_rate": float(self._tmp_world_near_miss_rate[local_idx]) if getattr(self, "_tmp_world_near_miss_rate", None) is not None else -1.0,
                         "mean_max_drac": float(self._tmp_world_mean_max_drac[local_idx]) if getattr(self, "_tmp_world_mean_max_drac", None) is not None else -1.0,
                         "high_drac_rate": float(self._tmp_world_high_drac_rate[local_idx]) if getattr(self, "_tmp_world_high_drac_rate", None) is not None else -1.0,
+                        # Workzone safety metrics per world (step-averaged)
+                        "cone_near_miss_rate": float(
+                            (self._episode_cone_near_miss_steps[:, env_id] * world_active_mask[:, local_idx].float()).sum()
+                            / denom
+                            / max(1, int(world_episode_length_steps[local_idx]))
+                        ) if self._cone_positions_xy_m.shape[1] > 0 else -1.0,
+                        "speed_violation_rate": float(
+                            (self._episode_speed_violation_steps[:, env_id] * world_active_mask[:, local_idx].float()).sum()
+                            / denom
+                            / max(1, int(world_episode_length_steps[local_idx]))
+                        ) if self._cone_positions_xy_m.shape[1] > 0 else -1.0,
                     }
                 )
         self._sync_timing_device()

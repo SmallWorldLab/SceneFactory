@@ -138,6 +138,21 @@ parser.add_argument(
     default=bool(_cfg_value(file_cfg, "observation", "road_points_include_dirs", False)),
 )
 parser.add_argument(
+    "--obs_cone_points_enable",
+    action=argparse.BooleanOptionalAction,
+    default=bool(_cfg_value(file_cfg, "observation", "cone_points_enable", False)),
+)
+parser.add_argument(
+    "--obs_cone_points_k",
+    type=int,
+    default=int(_cfg_value(file_cfg, "observation", "cone_points_k", 10)),
+)
+parser.add_argument(
+    "--obs_cone_points_radius_m",
+    type=float,
+    default=float(_cfg_value(file_cfg, "observation", "cone_points_radius_m", 50.0)),
+)
+parser.add_argument(
     "--obs_neighbor_enable",
     action=argparse.BooleanOptionalAction,
     default=bool(_cfg_value(file_cfg, "observation", "neighbor_enable", True)),
@@ -261,6 +276,11 @@ parser.add_argument("--reward_choco_road_edge_ttc_penalty_max", type=float, defa
 parser.add_argument("--reward_choco_road_edge_ttc_penalty_min_ttc", type=float, default=float(_cfg_value(file_cfg, "reward", "choco_road_edge_ttc_penalty_min_ttc", 0.5)))
 parser.add_argument("--reward_choco_road_edge_ttc_hard_min_ttc", type=float, default=float(_cfg_value(file_cfg, "reward", "choco_road_edge_ttc_hard_min_ttc", 0.5)))
 parser.add_argument("--reward_choco_road_edge_ttc_radius_m", type=float, default=float(_cfg_value(file_cfg, "reward", "choco_road_edge_ttc_radius_m", 40.0)))
+parser.add_argument("--reward_workzone_cone_penalty_enable", action=argparse.BooleanOptionalAction, default=bool(_cfg_value(file_cfg, "env", "reward_workzone_cone_penalty_enable", False)))
+parser.add_argument("--reward_workzone_cone_penalty_alpha", type=float, default=float(_cfg_value(file_cfg, "env", "reward_workzone_cone_penalty_alpha", 0.20)))
+parser.add_argument("--reward_workzone_cone_safe_dist_m", type=float, default=float(_cfg_value(file_cfg, "env", "reward_workzone_cone_safe_dist_m", 1.5)))
+parser.add_argument("--reward_workzone_speed_penalty_enable", action=argparse.BooleanOptionalAction, default=bool(_cfg_value(file_cfg, "env", "reward_workzone_speed_penalty_enable", False)))
+parser.add_argument("--reward_workzone_speed_penalty_beta", type=float, default=float(_cfg_value(file_cfg, "env", "reward_workzone_speed_penalty_beta", 0.15)))
 parser.add_argument(
     "--tunable_config_json",
     type=str,
@@ -344,6 +364,7 @@ parser.add_argument(
         "scene_factory_policy_eval",
         "friction_ruler",
         "bicycle_sinwave_demo",
+        "physics_validation",
     ),
     default=str(_cfg_value(file_cfg, "test", "mode", "none")),
     help=(
@@ -898,6 +919,9 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     cfg.obs_road_points_type_norm = float(args_cli.obs_road_points_type_norm)
     cfg.obs_road_points_mode = str(args_cli.obs_road_points_mode)
     cfg.obs_road_points_include_dirs = bool(args_cli.obs_road_points_include_dirs)
+    cfg.obs_cone_points_enable = bool(args_cli.obs_cone_points_enable)
+    cfg.obs_cone_points_k = int(args_cli.obs_cone_points_k)
+    cfg.obs_cone_points_radius_m = float(args_cli.obs_cone_points_radius_m)
     cfg.obs_neighbor_enable = bool(args_cli.obs_neighbor_enable)
     cfg.obs_neighbor_k = int(args_cli.obs_neighbor_k)
     cfg.obs_neighbor_include_ttc = bool(args_cli.obs_neighbor_include_ttc)
@@ -945,6 +969,11 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     cfg.reward_choco_road_edge_ttc_penalty_min_ttc = float(args_cli.reward_choco_road_edge_ttc_penalty_min_ttc)
     cfg.reward_choco_road_edge_ttc_hard_min_ttc = float(args_cli.reward_choco_road_edge_ttc_hard_min_ttc)
     cfg.reward_choco_road_edge_ttc_radius_m = float(args_cli.reward_choco_road_edge_ttc_radius_m)
+    cfg.reward_workzone_cone_penalty_enable = bool(args_cli.reward_workzone_cone_penalty_enable)
+    cfg.reward_workzone_cone_penalty_alpha = float(args_cli.reward_workzone_cone_penalty_alpha)
+    cfg.reward_workzone_cone_safe_dist_m = float(args_cli.reward_workzone_cone_safe_dist_m)
+    cfg.reward_workzone_speed_penalty_enable = bool(args_cli.reward_workzone_speed_penalty_enable)
+    cfg.reward_workzone_speed_penalty_beta = float(args_cli.reward_workzone_speed_penalty_beta)
     cfg.test_mode = str(args_cli.test_mode).strip().lower()
     cfg.invincible = bool(args_cli.invincible)
     cfg.random_od = bool(args_cli.random_od)
@@ -1071,6 +1100,16 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
             print("[INFO][SceneFactory] bicycle_sinwave_demo enables Fabric for headless video capture.")
         cfg.sim.use_fabric = True if bool(args_cli.video) else bool(args_cli.use_fabric)
         print("[INFO][SceneFactory] bicycle_sinwave_demo: dynamics_mode=bicycle, invincible=True", flush=True)
+    elif cfg.test_mode == "physics_validation":
+        cfg.use_scene_factory_roads = False
+        cfg.friction_ruler_mode = True
+        cfg.friction_ruler_mu_values = str(_cfg_value(file_cfg, "env", "friction_ruler_mu_values",
+                                                       "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.10,0.25,0.40,0.60,0.85"))
+        _pv_max_speed = _cfg_value(file_cfg, "env", "bicycle_max_speed_mps", None)
+        if _pv_max_speed is not None:
+            cfg.bicycle_max_speed_mps = float(_pv_max_speed)
+        print("[INFO][PhysicsValidation] friction_ruler_mode=True, roads disabled, "
+              f"mu_values={cfg.friction_ruler_mu_values}", flush=True)
     elif cfg.test_mode == "friction_ruler":
         cfg.use_scene_factory_roads = False
         cfg.friction_ruler_mode = True
@@ -1225,6 +1264,9 @@ def _build_resolved_config(
             "road_points_type_norm": float(env_cfg.obs_road_points_type_norm),
             "road_points_mode": str(env_cfg.obs_road_points_mode),
             "road_points_include_dirs": bool(env_cfg.obs_road_points_include_dirs),
+            "cone_points_enable": bool(env_cfg.obs_cone_points_enable),
+            "cone_points_k": int(env_cfg.obs_cone_points_k),
+            "cone_points_radius_m": float(env_cfg.obs_cone_points_radius_m),
             "neighbor_enable": bool(env_cfg.obs_neighbor_enable),
             "neighbor_k": int(env_cfg.obs_neighbor_k),
             "neighbor_include_ttc": bool(env_cfg.obs_neighbor_include_ttc),
@@ -1276,6 +1318,11 @@ def _build_resolved_config(
             "choco_road_edge_ttc_penalty_min_ttc": float(env_cfg.reward_choco_road_edge_ttc_penalty_min_ttc),
             "choco_road_edge_ttc_hard_min_ttc": float(env_cfg.reward_choco_road_edge_ttc_hard_min_ttc),
             "choco_road_edge_ttc_radius_m": float(env_cfg.reward_choco_road_edge_ttc_radius_m),
+            "workzone_cone_penalty_enable": bool(env_cfg.reward_workzone_cone_penalty_enable),
+            "workzone_cone_penalty_alpha": float(env_cfg.reward_workzone_cone_penalty_alpha),
+            "workzone_cone_safe_dist_m": float(env_cfg.reward_workzone_cone_safe_dist_m),
+            "workzone_speed_penalty_enable": bool(env_cfg.reward_workzone_speed_penalty_enable),
+            "workzone_speed_penalty_beta": float(env_cfg.reward_workzone_speed_penalty_beta),
         },
         "policy": policy_cfg,
         "test": {
@@ -1443,6 +1490,9 @@ def _write_run_metadata(run_dir: Path, env_cfg: StudentVehicleMultiAgentGoalEnvC
             "obs_road_points_type_norm": env_cfg.obs_road_points_type_norm,
             "obs_road_points_mode": env_cfg.obs_road_points_mode,
             "obs_road_points_include_dirs": env_cfg.obs_road_points_include_dirs,
+            "obs_cone_points_enable": env_cfg.obs_cone_points_enable,
+            "obs_cone_points_k": env_cfg.obs_cone_points_k,
+            "obs_cone_points_radius_m": env_cfg.obs_cone_points_radius_m,
             "obs_neighbor_enable": env_cfg.obs_neighbor_enable,
             "obs_neighbor_k": env_cfg.obs_neighbor_k,
             "obs_neighbor_include_ttc": env_cfg.obs_neighbor_include_ttc,
@@ -1489,6 +1539,11 @@ def _write_run_metadata(run_dir: Path, env_cfg: StudentVehicleMultiAgentGoalEnvC
             "reward_choco_road_edge_ttc_penalty_min_ttc": env_cfg.reward_choco_road_edge_ttc_penalty_min_ttc,
             "reward_choco_road_edge_ttc_hard_min_ttc": env_cfg.reward_choco_road_edge_ttc_hard_min_ttc,
             "reward_choco_road_edge_ttc_radius_m": env_cfg.reward_choco_road_edge_ttc_radius_m,
+            "reward_workzone_cone_penalty_enable": env_cfg.reward_workzone_cone_penalty_enable,
+            "reward_workzone_cone_penalty_alpha": env_cfg.reward_workzone_cone_penalty_alpha,
+            "reward_workzone_cone_safe_dist_m": env_cfg.reward_workzone_cone_safe_dist_m,
+            "reward_workzone_speed_penalty_enable": env_cfg.reward_workzone_speed_penalty_enable,
+            "reward_workzone_speed_penalty_beta": env_cfg.reward_workzone_speed_penalty_beta,
         },
         "runner_cfg": {
             **runner_cfg.to_dict(),
@@ -2713,6 +2768,29 @@ def _run_scene_factory_policy_eval(
             )
 
 
+def _reset_obs_normalizer(policy) -> None:
+    """Reset obs normalizer to neutral state (mean=0, var=1, std=1).
+
+    When fine-tuning from a checkpoint trained on a different scene distribution
+    some normalizer dims may have std≈0 (features that were always constant).
+    Applying those stats to new obs causes 100× blow-up → NaN → training crash.
+    Resetting to neutral lets the normalizer re-adapt in the new domain.
+    """
+    import torch
+
+    for attr in ("actor_obs_normalizer", "critic_obs_normalizer"):
+        norm = getattr(policy, attr, None)
+        if norm is None or not hasattr(norm, "_mean"):
+            continue
+        with torch.no_grad():
+            norm._mean.zero_()
+            norm._var.fill_(1.0)
+            norm._std.fill_(1.0)
+            if hasattr(norm, "count"):
+                norm.count.zero_()
+    print("[INFO][SceneFactory] Obs normalizer reset to neutral for fine-tuning.", flush=True)
+
+
 def main():
     env_cfg = _build_env_cfg()
     runner_cfg = _build_runner_cfg(env_cfg.sim.device)
@@ -2748,6 +2826,14 @@ def main():
         finally:
             base_env.close()
             print(f"[INFO] Bicycle sinwave demo finished in {time.time() - start_time:.2f}s")
+        return
+    if str(args_cli.test_mode).strip().lower() == "physics_validation":
+        from src.physics_validation import run_physics_validation
+        try:
+            run_physics_validation(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Physics validation finished in {time.time() - start_time:.2f}s")
         return
 
     if str(args_cli.shared_policy_mode).strip().lower() == "agent_slots":
@@ -2796,8 +2882,9 @@ def main():
         if not resume_path.is_file():
             raise FileNotFoundError(f"--resume_from checkpoint not found: {resume_path}")
         print(f"[INFO] Resuming training from checkpoint: {resume_path}", flush=True)
-        runner.load(str(resume_path), load_optimizer=True)
+        runner.load(str(resume_path), load_optimizer=False)
         print(f"[INFO] Resumed at iteration {runner.current_learning_iteration}", flush=True)
+        _reset_obs_normalizer(runner.alg.policy)
 
     _outcome_status = "success"
     _outcome_error: str | None = None

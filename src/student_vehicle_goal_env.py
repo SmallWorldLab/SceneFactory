@@ -117,7 +117,7 @@ def build_student_vehicle_articulation_cfg(
                 sleep_threshold=0.005,
                 stabilization_threshold=0.001,
             ),
-            joint_drive_props=sim_utils.JointDrivePropertiesCfg(max_effort=5000.0, max_velocity=2000.0),
+            joint_drive_props=sim_utils.JointDrivePropertiesCfg(max_effort=1e8, max_velocity=2000.0),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(0.0, 0.0, float(spawn_height_m)),
@@ -129,14 +129,14 @@ def build_student_vehicle_articulation_cfg(
                 joint_names_expr=[".*_steer_joint"],
                 stiffness=0.0,
                 damping=0.0,
-                effort_limit_sim=5000.0,
+                effort_limit_sim=1e8,
                 velocity_limit_sim=200.0,
             ),
             "wheels": ImplicitActuatorCfg(
                 joint_names_expr=[".*_wheel_joint"],
                 stiffness=0.0,
-                damping=0.0,
-                effort_limit_sim=5000.0,
+                damping=50.0,   # velocity-tracking drive: effort = 50 * (target_omega - current_omega)
+                effort_limit_sim=1e8,
                 velocity_limit_sim=2000.0,
             ),
         },

@@ -1,0 +1,286 @@
+# workzone_scenes.yaml
+# Scene manifest for workzone policy fine-tuning.
+#
+# 256 synthetic workzone scenes (straight-road, randomized taper designs).
+# At startup, 32 of the 256 are sampled via random_fill with seed 2024.
+#
+# Regenerate scenes with:
+#   python -m src.workzone_scene_generator --num_worlds 256 --seed 42
+
+io:
+  scene_json_dir: data/processed/workzone_scenes_json
+
+road:
+  # Workzone polylines have ~6.9 m point spacing; default jump_break_m=3.0 filters every segment.
+  jump_break_m: 10.0
+
+world:
+  root_container: /World/SceneFactoryWorlds
+  world_count: 32
+  grid_cols: 8
+  rows: 4
+  world_size_m: [300.0, 100.0]
+  padding_m: 200.0
+  base_z_m: 0.0
+  bounds_size_m: 300.0
+  origin_mode: center
+  origin_center_mode: mean
+  assignment_fill_mode: random_fill
+  assignment_fill_seed: 2024
+  assignments:
+  - {scene_json: scene_workzone_000.json}
+  - {scene_json: scene_workzone_001.json}
+  - {scene_json: scene_workzone_002.json}
+  - {scene_json: scene_workzone_003.json}
+  - {scene_json: scene_workzone_004.json}
+  - {scene_json: scene_workzone_005.json}
+  - {scene_json: scene_workzone_006.json}
+  - {scene_json: scene_workzone_007.json}
+  - {scene_json: scene_workzone_008.json}
+  - {scene_json: scene_workzone_009.json}
+  - {scene_json: scene_workzone_010.json}
+  - {scene_json: scene_workzone_011.json}
+  - {scene_json: scene_workzone_012.json}
+  - {scene_json: scene_workzone_013.json}
+  - {scene_json: scene_workzone_014.json}
+  - {scene_json: scene_workzone_015.json}
+  - {scene_json: scene_workzone_016.json}
+  - {scene_json: scene_workzone_017.json}
+  - {scene_json: scene_workzone_018.json}
+  - {scene_json: scene_workzone_019.json}
+  - {scene_json: scene_workzone_020.json}
+  - {scene_json: scene_workzone_021.json}
+  - {scene_json: scene_workzone_022.json}
+  - {scene_json: scene_workzone_023.json}
+  - {scene_json: scene_workzone_024.json}
+  - {scene_json: scene_workzone_025.json}
+  - {scene_json: scene_workzone_026.json}
+  - {scene_json: scene_workzone_027.json}
+  - {scene_json: scene_workzone_028.json}
+  - {scene_json: scene_workzone_029.json}
+  - {scene_json: scene_workzone_030.json}
+  - {scene_json: scene_workzone_031.json}
+  - {scene_json: scene_workzone_032.json}
+  - {scene_json: scene_workzone_033.json}
+  - {scene_json: scene_workzone_034.json}
+  - {scene_json: scene_workzone_035.json}
+  - {scene_json: scene_workzone_036.json}
+  - {scene_json: scene_workzone_037.json}
+  - {scene_json: scene_workzone_038.json}
+  - {scene_json: scene_workzone_039.json}
+  - {scene_json: scene_workzone_040.json}
+  - {scene_json: scene_workzone_041.json}
+  - {scene_json: scene_workzone_042.json}
+  - {scene_json: scene_workzone_043.json}
+  - {scene_json: scene_workzone_044.json}
+  - {scene_json: scene_workzone_045.json}
+  - {scene_json: scene_workzone_046.json}
+  - {scene_json: scene_workzone_047.json}
+  - {scene_json: scene_workzone_048.json}
+  - {scene_json: scene_workzone_049.json}
+  - {scene_json: scene_workzone_050.json}
+  - {scene_json: scene_workzone_051.json}
+  - {scene_json: scene_workzone_052.json}
+  - {scene_json: scene_workzone_053.json}
+  - {scene_json: scene_workzone_054.json}
+  - {scene_json: scene_workzone_055.json}
+  - {scene_json: scene_workzone_056.json}
+  - {scene_json: scene_workzone_057.json}
+  - {scene_json: scene_workzone_058.json}
+  - {scene_json: scene_workzone_059.json}
+  - {scene_json: scene_workzone_060.json}
+  - {scene_json: scene_workzone_061.json}
+  - {scene_json: scene_workzone_062.json}
+  - {scene_json: scene_workzone_063.json}
+  - {scene_json: scene_workzone_064.json}
+  - {scene_json: scene_workzone_065.json}
+  - {scene_json: scene_workzone_066.json}
+  - {scene_json: scene_workzone_067.json}
+  - {scene_json: scene_workzone_068.json}
+  - {scene_json: scene_workzone_069.json}
+  - {scene_json: scene_workzone_070.json}
+  - {scene_json: scene_workzone_071.json}
+  - {scene_json: scene_workzone_072.json}
+  - {scene_json: scene_workzone_073.json}
+  - {scene_json: scene_workzone_074.json}
+  - {scene_json: scene_workzone_075.json}
+  - {scene_json: scene_workzone_076.json}
+  - {scene_json: scene_workzone_077.json}
+  - {scene_json: scene_workzone_078.json}
+  - {scene_json: scene_workzone_079.json}
+  - {scene_json: scene_workzone_080.json}
+  - {scene_json: scene_workzone_081.json}
+  - {scene_json: scene_workzone_082.json}
+  - {scene_json: scene_workzone_083.json}
+  - {scene_json: scene_workzone_084.json}
+  - {scene_json: scene_workzone_085.json}
+  - {scene_json: scene_workzone_086.json}
+  - {scene_json: scene_workzone_087.json}
+  - {scene_json: scene_workzone_088.json}
+  - {scene_json: scene_workzone_089.json}
+  - {scene_json: scene_workzone_090.json}
+  - {scene_json: scene_workzone_091.json}
+  - {scene_json: scene_workzone_092.json}
+  - {scene_json: scene_workzone_093.json}
+  - {scene_json: scene_workzone_094.json}
+  - {scene_json: scene_workzone_095.json}
+  - {scene_json: scene_workzone_096.json}
+  - {scene_json: scene_workzone_097.json}
+  - {scene_json: scene_workzone_098.json}
+  - {scene_json: scene_workzone_099.json}
+  - {scene_json: scene_workzone_100.json}
+  - {scene_json: scene_workzone_101.json}
+  - {scene_json: scene_workzone_102.json}
+  - {scene_json: scene_workzone_103.json}
+  - {scene_json: scene_workzone_104.json}
+  - {scene_json: scene_workzone_105.json}
+  - {scene_json: scene_workzone_106.json}
+  - {scene_json: scene_workzone_107.json}
+  - {scene_json: scene_workzone_108.json}
+  - {scene_json: scene_workzone_109.json}
+  - {scene_json: scene_workzone_110.json}
+  - {scene_json: scene_workzone_111.json}
+  - {scene_json: scene_workzone_112.json}
+  - {scene_json: scene_workzone_113.json}
+  - {scene_json: scene_workzone_114.json}
+  - {scene_json: scene_workzone_115.json}
+  - {scene_json: scene_workzone_116.json}
+  - {scene_json: scene_workzone_117.json}
+  - {scene_json: scene_workzone_118.json}
+  - {scene_json: scene_workzone_119.json}
+  - {scene_json: scene_workzone_120.json}
+  - {scene_json: scene_workzone_121.json}
+  - {scene_json: scene_workzone_122.json}
+  - {scene_json: scene_workzone_123.json}
+  - {scene_json: scene_workzone_124.json}
+  - {scene_json: scene_workzone_125.json}
+  - {scene_json: scene_workzone_126.json}
+  - {scene_json: scene_workzone_127.json}
+  - {scene_json: scene_workzone_128.json}
+  - {scene_json: scene_workzone_129.json}
+  - {scene_json: scene_workzone_130.json}
+  - {scene_json: scene_workzone_131.json}
+  - {scene_json: scene_workzone_132.json}
+  - {scene_json: scene_workzone_133.json}
+  - {scene_json: scene_workzone_134.json}
+  - {scene_json: scene_workzone_135.json}
+  - {scene_json: scene_workzone_136.json}
+  - {scene_json: scene_workzone_137.json}
+  - {scene_json: scene_workzone_138.json}
+  - {scene_json: scene_workzone_139.json}
+  - {scene_json: scene_workzone_140.json}
+  - {scene_json: scene_workzone_141.json}
+  - {scene_json: scene_workzone_142.json}
+  - {scene_json: scene_workzone_143.json}
+  - {scene_json: scene_workzone_144.json}
+  - {scene_json: scene_workzone_145.json}
+  - {scene_json: scene_workzone_146.json}
+  - {scene_json: scene_workzone_147.json}
+  - {scene_json: scene_workzone_148.json}
+  - {scene_json: scene_workzone_149.json}
+  - {scene_json: scene_workzone_150.json}
+  - {scene_json: scene_workzone_151.json}
+  - {scene_json: scene_workzone_152.json}
+  - {scene_json: scene_workzone_153.json}
+  - {scene_json: scene_workzone_154.json}
+  - {scene_json: scene_workzone_155.json}
+  - {scene_json: scene_workzone_156.json}
+  - {scene_json: scene_workzone_157.json}
+  - {scene_json: scene_workzone_158.json}
+  - {scene_json: scene_workzone_159.json}
+  - {scene_json: scene_workzone_160.json}
+  - {scene_json: scene_workzone_161.json}
+  - {scene_json: scene_workzone_162.json}
+  - {scene_json: scene_workzone_163.json}
+  - {scene_json: scene_workzone_164.json}
+  - {scene_json: scene_workzone_165.json}
+  - {scene_json: scene_workzone_166.json}
+  - {scene_json: scene_workzone_167.json}
+  - {scene_json: scene_workzone_168.json}
+  - {scene_json: scene_workzone_169.json}
+  - {scene_json: scene_workzone_170.json}
+  - {scene_json: scene_workzone_171.json}
+  - {scene_json: scene_workzone_172.json}
+  - {scene_json: scene_workzone_173.json}
+  - {scene_json: scene_workzone_174.json}
+  - {scene_json: scene_workzone_175.json}
+  - {scene_json: scene_workzone_176.json}
+  - {scene_json: scene_workzone_177.json}
+  - {scene_json: scene_workzone_178.json}
+  - {scene_json: scene_workzone_179.json}
+  - {scene_json: scene_workzone_180.json}
+  - {scene_json: scene_workzone_181.json}
+  - {scene_json: scene_workzone_182.json}
+  - {scene_json: scene_workzone_183.json}
+  - {scene_json: scene_workzone_184.json}
+  - {scene_json: scene_workzone_185.json}
+  - {scene_json: scene_workzone_186.json}
+  - {scene_json: scene_workzone_187.json}
+  - {scene_json: scene_workzone_188.json}
+  - {scene_json: scene_workzone_189.json}
+  - {scene_json: scene_workzone_190.json}
+  - {scene_json: scene_workzone_191.json}
+  - {scene_json: scene_workzone_192.json}
+  - {scene_json: scene_workzone_193.json}
+  - {scene_json: scene_workzone_194.json}
+  - {scene_json: scene_workzone_195.json}
+  - {scene_json: scene_workzone_196.json}
+  - {scene_json: scene_workzone_197.json}
+  - {scene_json: scene_workzone_198.json}
+  - {scene_json: scene_workzone_199.json}
+  - {scene_json: scene_workzone_200.json}
+  - {scene_json: scene_workzone_201.json}
+  - {scene_json: scene_workzone_202.json}
+  - {scene_json: scene_workzone_203.json}
+  - {scene_json: scene_workzone_204.json}
+  - {scene_json: scene_workzone_205.json}
+  - {scene_json: scene_workzone_206.json}
+  - {scene_json: scene_workzone_207.json}
+  - {scene_json: scene_workzone_208.json}
+  - {scene_json: scene_workzone_209.json}
+  - {scene_json: scene_workzone_210.json}
+  - {scene_json: scene_workzone_211.json}
+  - {scene_json: scene_workzone_212.json}
+  - {scene_json: scene_workzone_213.json}
+  - {scene_json: scene_workzone_214.json}
+  - {scene_json: scene_workzone_215.json}
+  - {scene_json: scene_workzone_216.json}
+  - {scene_json: scene_workzone_217.json}
+  - {scene_json: scene_workzone_218.json}
+  - {scene_json: scene_workzone_219.json}
+  - {scene_json: scene_workzone_220.json}
+  - {scene_json: scene_workzone_221.json}
+  - {scene_json: scene_workzone_222.json}
+  - {scene_json: scene_workzone_223.json}
+  - {scene_json: scene_workzone_224.json}
+  - {scene_json: scene_workzone_225.json}
+  - {scene_json: scene_workzone_226.json}
+  - {scene_json: scene_workzone_227.json}
+  - {scene_json: scene_workzone_228.json}
+  - {scene_json: scene_workzone_229.json}
+  - {scene_json: scene_workzone_230.json}
+  - {scene_json: scene_workzone_231.json}
+  - {scene_json: scene_workzone_232.json}
+  - {scene_json: scene_workzone_233.json}
+  - {scene_json: scene_workzone_234.json}
+  - {scene_json: scene_workzone_235.json}
+  - {scene_json: scene_workzone_236.json}
+  - {scene_json: scene_workzone_237.json}
+  - {scene_json: scene_workzone_238.json}
+  - {scene_json: scene_workzone_239.json}
+  - {scene_json: scene_workzone_240.json}
+  - {scene_json: scene_workzone_241.json}
+  - {scene_json: scene_workzone_242.json}
+  - {scene_json: scene_workzone_243.json}
+  - {scene_json: scene_workzone_244.json}
+  - {scene_json: scene_workzone_245.json}
+  - {scene_json: scene_workzone_246.json}
+  - {scene_json: scene_workzone_247.json}
+  - {scene_json: scene_workzone_248.json}
+  - {scene_json: scene_workzone_249.json}
+  - {scene_json: scene_workzone_250.json}
+  - {scene_json: scene_workzone_251.json}
+  - {scene_json: scene_workzone_252.json}
+  - {scene_json: scene_workzone_253.json}
+  - {scene_json: scene_workzone_254.json}
+  - {scene_json: scene_workzone_255.json}

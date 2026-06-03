@@ -235,11 +235,11 @@ def build_workzone_world(
     # Workzone box
     workzone = scene.get("workzone", {})
     cone_cfg = workzone.get("cone_cfg", {})
-    wz_len = float(cone_cfg.get("workzone_length_m", 30.0))
+    wz_len = float(workzone.get("workzone_length_m", 30.0))  # fixed across all worlds
     lane_w = float(cone_cfg.get("lane_width_m", 3.7))
-    # Right lane closed: center Y = lane_w + lane_w/2 = 3*lane_w/2 ... no:
-    # Right lane Y center = lane_w * 0.75 (between 0 and road_half_w)
-    wz_center_y = lane_w * 0.75
+    # Rightmost lane center: road has 2 lanes per direction, so rightmost lane
+    # spans (lane_w → 2*lane_w) with center at lane_w * 1.5
+    wz_center_y = lane_w * 1.5
     _spawn_workzone_box(
         stage, f"{world_root}/Workzone",
         center_x=0.0, center_y=wz_center_y,
@@ -293,8 +293,10 @@ def main() -> None:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from src.workzone_scene_generator import write_workzone_scenes
     scene_dir = Path(args.output_dir) / "scenes"
+    workzone_length_m = float(world_cfg.get("workzone_length_m", 30.0))
     print(f"\n[workzone_demo] Generating {num_worlds} workzone scenes …")
-    scene_paths = write_workzone_scenes(scene_dir, num_worlds, seed, road_length_m)
+    print(f"  Fixed workzone: {workzone_length_m:.0f} m  |  Taper design randomized per world")
+    scene_paths = write_workzone_scenes(scene_dir, num_worlds, seed, road_length_m, workzone_length_m)
 
     # --- Build USD stage ---
     sim_cfg = sim_utils.SimulationCfg(dt=1.0 / 60.0)

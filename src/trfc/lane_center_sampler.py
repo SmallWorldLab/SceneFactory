@@ -146,6 +146,7 @@ def extract_lane_polylines(
     lane_types: Sequence[int] = (1, 2),
     min_polyline_length_m: float = 5.0,
     max_segment_gap_m: float | None = None,
+    respect_passable: bool = True,
 ) -> List[LanePolyline]:
     road = scene_cfg.get("road", {}) or {}
     polylines = list(road.get("polylines", []) or [])
@@ -153,6 +154,8 @@ def extract_lane_polylines(
 
     out: List[LanePolyline] = []
     for idx, pl in enumerate(polylines):
+        if respect_passable and not pl.get("passable", True):
+            continue
         road_type = _safe_int(pl.get("type", -1), -1)
         if lane_type_set and road_type not in lane_type_set:
             continue

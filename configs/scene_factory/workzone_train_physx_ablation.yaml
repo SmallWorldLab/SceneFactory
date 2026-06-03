@@ -1,0 +1,161 @@
+# workzone_train_physx_ablation.yaml
+# PhysX ablation config — identical to workzone_train.yaml (bicycle) EXCEPT:
+#   - dynamics_mode: PhysX (default, no bicycle fields)
+#   - choco_idle_speed_threshold_mps: 1.0  (same as bicycle, not 2.5)
+#   - learning_rate: 3.0e-4                (same as bicycle)
+# Purpose: isolate whether bicycle dynamics is strictly necessary, or if
+# the idle reward threshold was the main bottleneck for PhysX training.
+# Training config for workzone safety policy fine-tuning / evaluation.
+#
+# Generates synthetic straight-road scenes with workzone taper layouts and trains
+# (or evaluates) a driving policy on them. The outer CEM loop in
+# scripts/optimize_workzone_config.py sweeps taper design parameters and calls
+# this config repeatedly to score each configuration.
+#
+# Scene files must be pre-generated with:
+#   python -m src.workzone_scene_generator \
+#     --output_dir data/processed/workzone_scenes_json \
+#     --num_worlds 8
+#
+# Then launch training:
+#   conda run -n isaac-pytorch python -u \
+#     -m src.train_student_vehicle_goal_multiagent_rsl_rl \
+#     --config configs/scene_factory/workzone_train.yaml \
+#     --headless
+
+env:
+  num_envs: 32                   # 32 parallel workzone worlds (4x more than before)
+  num_agents_per_env: 4          # 4 agents per world
+  observation_mode: "choco_reference"
+  env_spacing: 300.0
+  spawn_height_m: 1.2
+  spawn_yaw_noise_rad: 0.0
+  ground_mode: "cuboid"          # per-env ground box (required for SceneFactory)
+  use_scene_factory_roads: true
+  reset_mode: "teleport_only"
+  start_radius_m: 0.0
+  agent_spawn_circle_radius_m: 0.0
+  agent_spawn_jitter_m: 0.0
+  episode_length_s: 80.0         # longer episodes to traverse longer workzones (up to 260m road)
+  goal_radius_min_m: 5.0
+  goal_radius_max_m: 30.0
+  goal_reached_threshold_m: 3.0
+  fall_height_threshold_m: 0.0
+  bad_tilt_gravity_threshold: -0.15
+  max_distance_from_origin_m: 150.0
+  agent_neighbor_obs_scale_m: 100.0
+  agent_collision_warmup_steps: 24
+  replicate_physics: false
+  clone_in_fabric: "false"
+
+  # Workzone cone proximity penalty
+  reward_workzone_cone_penalty_enable: true
+  reward_workzone_cone_penalty_alpha: 0.20      # penalty weight
+  reward_workzone_cone_safe_dist_m: 1.5          # distance threshold for penalty onset (m)
+
+  # Workzone speed limit compliance penalty
+  reward_workzone_speed_penalty_enable: true
+  reward_workzone_speed_penalty_beta: 0.15       # penalty weight per m/s over limit
+
+scene_factory:
+  config_path: "configs/scene_factory/workzone_scenes.yaml"
+  world_index: 0
+  world_selection_mode: "random_envs"
+  random_world_seed: 42
+
+observation:
+  weather_context_enable: true     # include weather context in ego obs (4 dims)
+  weather_context_blind: true      # workzone has no weather variation — always emit [0,1,0,0]
+  road_points_enable: true
+  road_points_k: 350               # number of road points in obs
+  road_points_radius_m: 10.0
+  road_points_type_norm: 20.0
+  road_points_mode: "road_running"
+  road_points_include_dirs: true   # road_point_dim=5
+  cone_points_enable: true         # workzone cone positions in ego frame
+  cone_points_k: 10
+  cone_points_radius_m: 50.0
+  neighbor_enable: true
+  neighbor_k: 24
+  neighbor_include_ttc: true       # vehicle_dim=7
+  neighbor_include_index: false
+  neighbor_ttc_max_s: 10.0
+  timing_print_enable: false
+  timing_print_every_n: 32
+
+timing:
+  step_log_enable: true
+  step_print_enable: false
+  step_print_every_n: 128
+  step_cuda_sync_enable: false
+
+reward:
+  mode: "choco_baseline"
+  goal_bonus: 60.0
+  lane_center_enable: false
+  lane_forbidden_enable: true
+  lane_forbidden_penalty: -20.0
+  collision_penalty: -6.0
+  crash_penalty: -10.0
+  choco_offroad_penalty: -0.5
+  choco_idle_penalty_enable: true
+  choco_idle_penalty_per_step: 0.06
+  choco_idle_speed_threshold_mps: 1.0   # lowered from 2.5 — bicycle starts from 0 and takes time to ramp
+  choco_geom_lane_enable: true
+  choco_geom_lane_per_step: 0.08
+  choco_geom_lane_tolerance_m: 1.75
+  choco_geom_lane_heading_weight: 0.8
+  choco_geom_lane_min_alignment: 0.35
+  choco_geom_route_progress_weight: 4.0
+  choco_geom_offroad_enable: true
+  choco_geom_offroad_lateral_threshold_m: 3.25
+  choco_geom_offroad_distance_threshold_m: 6.0
+  choco_ttc_penalty_enable: true
+  choco_ttc_penalty_alpha: 0.10
+  choco_ttc_penalty_max: 0.35
+  choco_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_penalty_enable: true
+  choco_road_edge_ttc_penalty_alpha: 0.07
+  choco_road_edge_ttc_penalty_max: 0.40
+  choco_road_edge_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_hard_min_ttc: 0.5
+  choco_road_edge_ttc_radius_m: 40.0
+
+policy:
+  type: "late_fusion"
+  ego_layers: [64, 64]
+  road_layers: [96, 96]
+  vehicle_layers: [96, 96]
+  shared_layers: [128, 64]
+  last_layer_dim_pi: 64
+  last_layer_dim_vf: 64
+  activation: "relu"
+  dropout: 0.0
+  pool: "max"
+
+assets:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
+
+runner:
+  log_dir: "logs/rsl_rl"
+  seed: 42
+  experiment_name: "workzone_optimization"
+  run_name: "workzone_train"
+  shared_policy_mode: "agent_slots"
+  max_iterations: 3000
+  num_steps_per_env: 128
+  save_interval: 100
+  learning_rate: 3.0e-4            # full LR — training from scratch, not fine-tuning
+  num_learning_epochs: 5
+  num_mini_batches: 8
+  entropy_coef: 3.0e-5
+  clip_param: 0.15
+  desired_kl: 0.01
+  gamma: 0.99
+  gae_lambda: 0.98
+  value_loss_coef: 1.0
+
+app:
+  device: "cuda:0"
+  rl_device: "cuda:0"

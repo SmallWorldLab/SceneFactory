@@ -33,20 +33,50 @@
 #   - Road surface friction  (vehicles drive on ground cuboid only)
 #   - Road-edge collision    (enable_segment_collision=False)
 #
+# IMPORTANT: runs with num_agents_per_env=1 (single agent per world).
+# With multiple agents, all spawn facing inward (yaw = formation_angle + pi),
+# so they collide with each other at ~t=5s and speed crashes to zero — this
+# masks the real physics. Single-agent mode isolates longitudinal dynamics.
+#
 # Output: logs/rsl_rl/scene_factory_demo/<timestamp>/
 #   params/run.json                                  (config + git commit)
 #   scene_factory_multiworld_random_steer_test_summary.json   <-- READ THIS
 #   scene_factory_multiworld_random_steer_test_metrics.jsonl
 #   outcome.json
+#
+# Usage:
+#   bash run_physics_sanity_test.sh                                     # default (plane ground)
+#   bash run_physics_sanity_test.sh --config configs/scene_factory/workzone_train.yaml  # cuboid ground
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Default config — can be overridden with --config <path>
+CONFIG="configs/scene_factory/demo_weather_physx_train.yaml"
+
+# Parse --config argument if provided, pass remaining args through
+PASSTHROUGH=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config)
+            CONFIG="$2"
+            shift 2
+            ;;
+        *)
+            PASSTHROUGH+=("$1")
+            shift
+            ;;
+    esac
+done
+
+echo "[physics-sanity] Using config: $CONFIG"
+
 PYTHONPATH=. python -u src/train_student_vehicle_goal_multiagent_rsl_rl.py \
-    --config configs/scene_factory/demo_weather_physx_train.yaml \
+    --config "$CONFIG" \
     --headless \
     --num_envs 4 \
+    --num_agents_per_env 1 \
     --test_mode scene_factory_multiworld_random_steer_test \
     --no-use_scene_factory_roads \
     --agent_spawn_circle_radius_m 8.0 \
@@ -57,7 +87,7 @@ PYTHONPATH=. python -u src/train_student_vehicle_goal_multiagent_rsl_rl.py \
     --max_distance_from_origin_m 2000.0 \
     --goal_radius_min_m 5000.0 \
     --goal_radius_max_m 6000.0 \
-    "$@"
+    "${PASSTHROUGH[@]}"
 
 # --- Post-run: print per-step speed curve from the metrics jsonl ---
 METRICS=$(find logs/rsl_rl/scene_factory_demo -name "*random_steer_test_metrics.jsonl" \

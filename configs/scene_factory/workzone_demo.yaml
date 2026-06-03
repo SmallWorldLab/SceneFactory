@@ -4,9 +4,10 @@
 # and a randomized taper-zone cone layout closing the right lane.
 
 world:
-  num_worlds: 6          # number of independent workzone layouts to show
-  seed: 42               # master RNG seed (each world gets seed + world_index)
+  num_worlds: 6          # number of independent taper designs to show
+  seed: 42               # master RNG seed (each world gets a derived seed)
   road_length_m: 200.0   # length of straight road segment per world
+  workzone_length_m: 30.0  # FIXED maintenance zone length — same in every world
   grid_cols: 3           # worlds arranged in a grid: cols × ceil(num_worlds/cols)
   world_spacing_x_m: 230.0  # X gap between world columns (> road_length)
   world_spacing_y_m: 25.0   # Y gap between world rows (> road width)
@@ -17,12 +18,13 @@ road:
   num_lanes: 2           # total lanes (right lane gets the workzone)
   shoulder_width_m: 1.0  # extra width outside outermost edge line
 
-# Workzone taper randomization bounds (overrides workzone_scene_generator defaults)
+# Workzone taper randomization bounds (the DESIGN choices we are optimizing)
+# The workzone box itself (length/position) is fixed via world.workzone_length_m above.
 workzone:
   taper_length_range_m: [20.0, 50.0]   # [min, max] approach taper length
   cone_spacing_range_m: [3.0, 8.0]     # [min, max] inter-cone spacing
   cone_lateral_jitter_m: 0.25          # max lateral jitter per cone
-  workzone_length_range_m: [20.0, 40.0] # [min, max] closed-lane box length
+  exit_taper_length_range_m: [15.0, 30.0]  # [min, max] exit taper length
 
 viewer:
   eye: [0.0, -280.0, 200.0]   # camera position (bird's-eye, slightly tilted)

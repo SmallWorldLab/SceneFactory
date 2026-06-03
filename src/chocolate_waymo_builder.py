@@ -698,6 +698,112 @@ class WaymoJsonMiniWorldBuilder:
             root_prim.SetCustomDataByKey("road_point_half_lengths_m", Vt.FloatArray(road_half_lengths_all))
             root_prim.SetCustomDataByKey("road_point_half_widths_m", Vt.FloatArray(road_half_widths_all))
 
+    # -------- workzone cones --------
+
+    def _spawn_traffic_cone(
+        self,
+        prim_path: str,
+        *,
+        x: float,
+        y: float,
+        z: float = 0.0,
+        cone_height_m: float = 0.72,
+        cone_base_radius_m: float = 0.20,
+    ) -> None:
+        """Place a single visual traffic cone (orange body + white band) at local position (x, y, z)."""
+        from pxr import UsdShade
+
+        stage = self.stage
+        mpu = _meters_per_unit(stage)
+
+        xform = UsdGeom.Xform.Define(stage, prim_path)
+        UsdGeom.XformCommonAPI(xform).SetTranslate(Gf.Vec3d(x / mpu, y / mpu, z / mpu))
+
+        # Body: orange cone
+        cone_prim_path = f"{prim_path}/Body"
+        cone = UsdGeom.Cone.Define(stage, cone_prim_path)
+        cone.CreateRadiusAttr(float(cone_base_radius_m / mpu))
+        cone.CreateHeightAttr(float(cone_height_m / mpu))
+        cone.CreateAxisAttr("Z")
+        UsdGeom.XformCommonAPI(cone).SetTranslate(Gf.Vec3d(0.0, 0.0, float(cone_height_m * 0.5 / mpu)))
+
+        mat_path = f"{prim_path}/OrangeMat"
+        mat = UsdShade.Material.Define(stage, mat_path)
+        shader = UsdShade.Shader.Define(stage, f"{mat_path}/Shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.95, 0.35, 0.02))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.6)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI(cone.GetPrim()).Bind(mat)
+
+        # White reflective band
+        band = UsdGeom.Cylinder.Define(stage, f"{prim_path}/Band")
+        band.CreateRadiusAttr(float(cone_base_radius_m * 0.65 / mpu))
+        band.CreateHeightAttr(float(0.06 / mpu))
+        band.CreateAxisAttr("Z")
+        UsdGeom.XformCommonAPI(band).SetTranslate(Gf.Vec3d(0.0, 0.0, float(cone_height_m * 0.55 / mpu)))
+
+        band_mat = UsdShade.Material.Define(stage, f"{prim_path}/WhiteMat")
+        band_shader = UsdShade.Shader.Define(stage, f"{prim_path}/WhiteMat/Shader")
+        band_shader.CreateIdAttr("UsdPreviewSurface")
+        band_shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.95, 0.95, 0.95))
+        band_shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.2)
+        band_mat.CreateSurfaceOutput().ConnectToSource(band_shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI(band.GetPrim()).Bind(band_mat)
+
+    def build_workzone_cones(self, cfg: Dict[str, Any]) -> None:
+        """Spawn workzone cone prims and write cone XY positions as USD custom metadata.
+
+        Reads ``cfg["workzone"]["cones"]`` (list of {x, y, z} world-space dicts) and:
+          1. Places a visual cone USD prim for each cone under <world_root>/WorkzoneCones/.
+          2. Writes ``workzone_cone_positions_xy`` (Vec2fArray) on the world root prim in
+             local stage-unit coordinates so the RL env can load them as a GPU tensor.
+          3. Writes ``workzone_speed_limit_mps`` (float, or -1.0 if absent) on the root prim.
+        """
+        wz = cfg.get("workzone", None)
+        if not isinstance(wz, dict):
+            return
+        cones_raw = wz.get("cones", []) or []
+        if not cones_raw:
+            return
+
+        stage = self.stage
+        mpu = _meters_per_unit(stage)
+        root_prim = stage.GetPrimAtPath(self.world_root)
+        if not root_prim.IsValid():
+            return
+
+        cones_root_path = f"{self.world_root}/WorkzoneCones"
+        UsdGeom.Xform.Define(stage, cones_root_path)
+
+        cone_positions_xy: list[Gf.Vec2f] = []
+        for i, c in enumerate(cones_raw):
+            try:
+                cx = float(c["x"])
+                cy = float(c["y"])
+                cz = float(c.get("z", 0.0))
+            except (KeyError, TypeError, ValueError):
+                continue
+            lx, ly, lz = self._to_local_xyz(cx, cy, cz)
+            self._spawn_traffic_cone(
+                f"{cones_root_path}/Cone_{i:04d}",
+                x=float(lx),
+                y=float(ly),
+                z=float(lz),
+            )
+            # Store in stage units (matches road_points_m convention; RL env rescales by mpu)
+            cone_positions_xy.append(Gf.Vec2f(float(lx) / mpu, float(ly) / mpu))
+
+        if cone_positions_xy:
+            root_prim.SetCustomDataByKey("workzone_cone_positions_xy", Vt.Vec2fArray(cone_positions_xy))
+
+        speed_limit = wz.get("speed_limit_mps", None)
+        root_prim.SetCustomDataByKey(
+            "workzone_speed_limit_mps",
+            float(speed_limit) if speed_limit is not None else -1.0,
+        )
+
     # -------- vehicles + parked cars --------
 
     def _spawn_vehicle_wizard_under(self, parent_path: str, position_m: Tuple[float, float, float], yaw_deg: float) -> Optional[str]:
@@ -1431,6 +1537,7 @@ class WaymoJsonMiniWorldBuilder:
             allowed_road_types=allowed_road_types,
             road_render_mode=road_render_mode,
         )
+        self.build_workzone_cones(cfg)
         self.build_agents_with_goals(
             cfg,
             max_agents=max_agents,
