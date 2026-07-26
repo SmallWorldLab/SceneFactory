@@ -284,7 +284,22 @@ parser.add_argument(
     "--ground_mode",
     choices=("plane", "cuboid"),
     default=str(_cfg_value(file_cfg, "env", "ground_mode", "plane")),
-    help="Ground implementation for the training scene.",
+    help="Ground implementation for the training scene. NOTE: ground_cuboid_size_m "
+         "and ground_contact_offset_m apply to 'cuboid' only; under 'plane' the "
+         "shared infinite GroundPlane is used and both are ignored.",
+)
+parser.add_argument(
+    "--ground_cuboid_size_m",
+    type=float,
+    default=float(_cfg_value(file_cfg, "env", "ground_cuboid_size_m", 1000.0)),
+    help="Side length of the per-world ground cuboid (ground_mode=cuboid only). "
+         "Traction depends strongly and non-monotonically on this.",
+)
+parser.add_argument(
+    "--ground_contact_offset_m",
+    type=float,
+    default=float(_cfg_value(file_cfg, "env", "ground_contact_offset_m", 0.10)),
+    help="PhysX contact_offset on the ground cuboid (ground_mode=cuboid only).",
 )
 parser.add_argument(
     "--apply_runtime_external_wrench",
@@ -826,6 +841,15 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     cfg.spawn_height_m = float(args_cli.spawn_height_m)
     cfg.spawn_yaw_noise_rad = float(args_cli.spawn_yaw_noise_rad)
     cfg.ground_mode = str(args_cli.ground_mode)
+    cfg.ground_cuboid_size_m = float(args_cli.ground_cuboid_size_m)
+    cfg.ground_contact_offset_m = float(args_cli.ground_contact_offset_m)
+    if str(args_cli.ground_mode).strip().lower() == "plane":
+        print(
+            "[WARN][SceneFactory] ground_mode='plane' uses the shared infinite "
+            "GroundPlane; ground_cuboid_size_m and ground_contact_offset_m are "
+            "IGNORED. The multi-agent contact_offset fix applies to 'cuboid' only.",
+            flush=True,
+        )
     cfg.use_scene_factory_roads = bool(args_cli.use_scene_factory_roads)
     cfg.scene_factory_config_path = str(Path(args_cli.scene_factory_config).expanduser().resolve())
     cfg.scene_factory_world_index = int(args_cli.scene_factory_world_index)

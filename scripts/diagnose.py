@@ -35,7 +35,7 @@ COVERAGE = {
     "scene-cycling": "world_count may exceed the number of available scene JSONs",
     "config-resolution": "demo config resolves to real scene files before Isaac Sim boots",
     "ground-params": "ground cuboid size and contact_offset are configurable",
-    "traction-probe": "every agent drives, not just agent 0 (multi-agent wheel tunnelling)",
+    "traction-probe": "every agent drives on a CUBOID ground, not just agent 0 (wheel tunnelling)",
     "physics-validation": "longitudinal, lateral and friction response of the PhysX vehicle",
 }
 
@@ -216,6 +216,9 @@ def check_traction_probe(args: argparse.Namespace) -> None:
         "--log_dir", str(out_dir),
         "--experiment_name", "diagnose", "--run_name", "traction_probe",
     ]
+    if args.ground_mode != "config":
+        cmd += ["--ground_mode", args.ground_mode,
+                "--ground_cuboid_size_m", str(args.ground_cuboid_size_m)]
     rc, out = _run(cmd, timeout=args.gpu_timeout, env=env)
     log = _save_log("traction_probe", out)
     if rc != 0:
@@ -257,6 +260,10 @@ def check_traction_probe(args: argparse.Namespace) -> None:
         straight = data.get("path_straightness")
         traj = f", straightness {straight:.2f}" if isinstance(straight, (int, float)) else ""
         _echo_report(out, "TRACTION PROBE")
+        mode = str(data.get("ground_mode", "")).lower()
+        if mode != "cuboid":
+            note += (f" -- ran on ground_mode={mode or 'unknown'}, which does NOT "
+                     "exercise the contact_offset fix; use --ground-mode cuboid")
         record("traction-probe", PASS,
                f"all {len(per_agent)} agents moving ({speeds} m/s{traj}){note}")
 
@@ -342,6 +349,11 @@ def main() -> int:
     p.add_argument("--gpu-timeout", type=float, default=1800.0)
     p.add_argument("--min-speed-mps", type=float, default=0.5,
                    help="per-agent mean speed below which an agent counts as stalled")
+    p.add_argument("--ground-mode", choices=("cuboid", "plane", "config"), default="cuboid",
+                   help="ground for the traction probe. Default 'cuboid' because the "
+                        "contact_offset fix only applies there; 'plane' cannot exercise it. "
+                        "'config' leaves the config's own setting alone.")
+    p.add_argument("--ground-cuboid-size-m", type=float, default=1000.0)
     p.add_argument("--drive-steps", type=int, default=600,
                    help="traction-probe drive steps. Too few and a healthy vehicle is "
                         "still accelerating when the probe ends, which reads as a low speed.")

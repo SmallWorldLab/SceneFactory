@@ -293,7 +293,10 @@ def run_traction_probe(env, run_dir: Path) -> None:
     summary = {
         "n_envs": n_env, "n_agents": n_agent, "dt_s": dt,
         "settle_steps": SETTLE_STEPS, "ramp_steps": RAMP_STEPS, "drive_steps": DRIVE_STEPS,
+        "ground_mode": getattr(env.cfg, "ground_mode", None),
         "ground_cuboid_size_m": getattr(env.cfg, "ground_cuboid_size_m", None),
+        "ground_contact_offset_m": getattr(env.cfg, "ground_contact_offset_m", None),
+        "env_spacing_m": getattr(env.cfg, "env_spacing", None),
         "wheel_friction_cap": getattr(env.cfg, "wheel_friction_cap", None),
         "scene_pool": getattr(env.cfg, "scene_factory_config_path", None),
         "mean_speed_mps": float(mean_speed.mean()),
@@ -327,8 +330,12 @@ def run_traction_probe(env, run_dir: Path) -> None:
         f"  Question: does every agent actually drive, or only agent 0?",
         f"  Config:   {n_env} worlds x {n_agent} agents, {DRIVE_STEPS} drive steps "
         f"({DRIVE_STEPS * dt:.1f} s)",
-        f"            ground_cuboid_size_m={summary['ground_cuboid_size_m']} "
-        f"wheel_friction_cap={summary['wheel_friction_cap']}",
+        f"            ground_mode={summary['ground_mode']}  env_spacing={summary['env_spacing_m']} m",
+        (f"            cuboid={summary['ground_cuboid_size_m']} m  "
+         f"contact_offset={summary['ground_contact_offset_m']} m"
+         if str(summary["ground_mode"]).lower() == "cuboid"
+         else "            NOTE: ground_mode=plane -- cuboid size and contact_offset are "
+              "NOT in play; this run does not exercise the contact_offset fix"),
         "",
         "  PER-AGENT (averaged over worlds) -- these must not diverge",
         f"    {'agent':>6} {'mean v (m/s)':>14} {'idle %':>9}",
