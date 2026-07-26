@@ -121,11 +121,22 @@ def write_scene_pool(path: Path, *, world_count: int, scene_json: str, scene_dir
 # result harvesting
 # --------------------------------------------------------------------------- #
 
-def read_casps_from_tensorboard(log_dir: Path) -> tuple[float | None, float | None, float | None]:
-    """Return (max CASPS, env_steps_per_s at that point, spawned agent count).
+def read_casps_from_tensorboard(
+    log_dir: Path, *, warmup_iters: int = 0
+) -> tuple[float | None, float | None, float | None]:
+    """Return (CASPS, env_steps_per_s, spawned agent count).
 
     CASPS is only emitted to TensorBoard (Perf/CASPS) by the RSL-RL wrapper; it
-    is not printed to stdout.
+    is not printed to stdout. rsl_rl appends extras["log"] once per step and
+    reduces it with torch.mean once per iteration, so there is exactly ONE
+    scalar point per PPO iteration, each already a mean over num_steps_per_env
+    steps.
+
+    The first iteration absorbs CUDA context creation, kernel autotuning,
+    first-touch allocations and Fabric settling, so it reads low. With
+    warmup_iters > 0 those leading points are dropped and the rest averaged;
+    with warmup_iters == 0 (the search trials, where only pass/fail matters) the
+    max is taken instead.
     """
     try:
         from tensorboard.backend.event_processing import event_accumulator
@@ -147,9 +158,12 @@ def read_casps_from_tensorboard(log_dir: Path) -> tuple[float | None, float | No
             acc.Reload()
             tags = set(acc.Tags().get("scalars", []))
             if "Perf/CASPS" in tags:
-                for s in acc.Scalars("Perf/CASPS"):
-                    if best_casps is None or s.value > best_casps:
-                        best_casps = float(s.value)
+                vals = [float(s.value) for s in acc.Scalars("Perf/CASPS")]
+                kept = vals[warmup_iters:] if warmup_iters < len(vals) else []
+                if kept:
+                    cand = sum(kept) / len(kept) if warmup_iters else max(kept)
+                    if best_casps is None or cand > best_casps:
+                        best_casps = cand
             if "Perf/env_steps_per_s" in tags:
                 vals = [s.value for s in acc.Scalars("Perf/env_steps_per_s")]
                 if vals:
@@ -202,9 +216,14 @@ def run_trial(
     num_envs: int,
     args: argparse.Namespace,
     workdir: Path,
+    iterations: int | None = None,
+    warmup_iters: int = 0,
+    tag: str = "",
 ) -> Trial:
     if args.dry_run:
         return _simulated_trial(agents_per_env, num_envs, args)
+
+    iterations = int(iterations if iterations is not None else args.iterations)
 
     idx = gpu_index(args.device)
     pool = workdir / f"pool_a{agents_per_env}_n{num_envs}.yaml"
@@ -214,7 +233,7 @@ def run_trial(
         scene_json=args.scene_json,
         scene_dir=args.scene_dir,
     )
-    log_dir = workdir / f"logs_a{agents_per_env}_n{num_envs}"
+    log_dir = workdir / f"logs_a{agents_per_env}_n{num_envs}{tag}"
 
     cmd = [
         sys.executable, "-u", "src/train_student_vehicle_goal_multiagent_rsl_rl.py",
@@ -223,10 +242,10 @@ def run_trial(
         "--num_envs", str(num_envs),
         "--num_agents_per_env", str(agents_per_env),
         "--scene_factory_config", str(pool),
-        "--max_iterations", str(args.iterations),
+        "--max_iterations", str(iterations),
         "--log_dir", str(log_dir),
         "--experiment_name", "casps_sweep",
-        "--run_name", f"a{agents_per_env}_n{num_envs}",
+        "--run_name", f"a{agents_per_env}_n{num_envs}{tag}",
         "--save_interval", str(10 ** 6),  # never checkpoint during a benchmark
         "--step_timing_log_enable",
     ]
@@ -278,7 +297,7 @@ def run_trial(
             peak_vram_mib=peak_vram[0] or None, wall_s=wall, detail=detail,
         )
 
-    casps, steps_s, spawned = read_casps_from_tensorboard(log_dir)
+    casps, steps_s, spawned = read_casps_from_tensorboard(log_dir, warmup_iters=warmup_iters)
     return Trial(
         agents_per_env, num_envs, "ok",
         casps=casps, env_steps_per_s=steps_s, spawned_agents=spawned,
@@ -413,7 +432,13 @@ def observation_summary(base_config: Path) -> dict:
         return {"error": f"could not compute: {exc}"}
 
 
-def write_outputs(out_dir: Path, trials: list[Trial], ceilings: dict[int, int | None], header: dict) -> None:
+def write_outputs(
+    out_dir: Path,
+    trials: list[Trial],
+    ceilings: dict[int, int | None],
+    header: dict,
+    measured: dict[int, Trial] | None = None,
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "sweep_meta.json").write_text(json.dumps(header, indent=2) + "\n")
     with (out_dir / "sweep_trials.csv").open("w", newline="") as fh:
@@ -428,7 +453,11 @@ def write_outputs(out_dir: Path, trials: list[Trial], ceilings: dict[int, int | 
     ]
     for a in sorted(ceilings):
         n = ceilings[a]
-        at_ceiling = [t for t in trials if t.agents_per_env == a and t.num_envs == n and t.verdict == "ok"]
+        conf = (measured or {}).get(a)
+        at_ceiling = (
+            [conf] if conf and conf.verdict == "ok"
+            else [t for t in trials if t.agents_per_env == a and t.num_envs == n and t.verdict == "ok"]
+        )
         oks = [t for t in trials if t.agents_per_env == a and t.verdict == "ok" and t.casps]
         best = max(oks, key=lambda t: t.casps) if oks else None
         c = at_ceiling[0] if at_ceiling else None
@@ -473,7 +502,14 @@ def main() -> int:
     p.add_argument("--seed-envs", type=int, default=256,
                    help="starting guess for the first (lowest) agent level")
     p.add_argument("--iterations", type=int, default=2,
-                   help="PPO iterations per trial; >=2 so the update path allocates")
+                   help="PPO iterations per SEARCH trial; >=2 so the update path allocates. "
+                        "Search trials only need pass/fail, so keep this small.")
+    p.add_argument("--measure-iterations", type=int, default=12,
+                   help="PPO iterations for the confirmation run at each ceiling, from which "
+                        "the reported CASPS is taken. 0 disables the confirmation pass.")
+    p.add_argument("--warmup-iterations", type=int, default=4,
+                   help="leading iterations discarded from the confirmation run; the first "
+                        "absorbs CUDA context creation, kernel autotune and Fabric settling")
     p.add_argument("--timeout", type=float, default=1800.0, help="per-trial seconds")
     p.add_argument("--tolerance", type=float, default=0.12,
                    help="stop bisecting at this relative bracket width")
@@ -519,19 +555,41 @@ def main() -> int:
     workdir = Path(tempfile.mkdtemp(prefix="casps_sweep_"))
     trials: list[Trial] = []
     ceilings: dict[int, int | None] = {}
+    measured: dict[int, Trial] = {}
     try:
         seed = args.seed_envs
         for a in levels:
             print(f"  agents/world = {a}  (seed {seed})", flush=True)
             ceiling = sweep_agent_level(a, seed_envs=seed, args=args, workdir=workdir, trials=trials)
             ceilings[a] = ceiling
-            print(f"  -> ceiling for {a} agents/world: {ceiling}\n", flush=True)
+            print(f"  -> ceiling for {a} agents/world: {ceiling}", flush=True)
+
+            # The search trials run only --iterations (default 2) and so give a
+            # single post-warmup CASPS sample. Re-run once at the ceiling for a
+            # longer, warmup-trimmed measurement, and prefer that number.
+            if ceiling and args.measure_iterations > 0 and not args.dry_run:
+                warm = min(args.warmup_iterations, max(0, args.measure_iterations - 1))
+                print(
+                    f"     confirming CASPS at {ceiling} worlds "
+                    f"({args.measure_iterations} iters, first {warm} discarded)...",
+                    flush=True,
+                )
+                m = run_trial(
+                    agents_per_env=a, num_envs=ceiling, args=args, workdir=workdir,
+                    iterations=args.measure_iterations, warmup_iters=warm, tag="_measure",
+                )
+                m.detail = (m.detail + " | confirmation run").strip(" |")
+                measured[a] = m
+                trials.append(m)
+                casps = f"{m.casps:,.0f}" if m.casps else "-"
+                print(f"     confirmed: {m.verdict}  CASPS={casps}", flush=True)
+            print("", flush=True)
             # Memory scales roughly with total agent slots, so the next level
             # (2x agents) should land near half the worlds.
             seed = max(args.min_envs, (ceiling or seed) // 2)
     finally:
         if trials:
-            write_outputs(args.out, trials, ceilings, header)
+            write_outputs(args.out, trials, ceilings, header, measured)
         shutil.rmtree(workdir, ignore_errors=True)
     return 0
 
