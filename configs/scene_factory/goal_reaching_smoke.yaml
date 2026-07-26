@@ -1,6 +1,6 @@
 # SceneFactory multi-agent goal-reaching smoke preset.
 # Usage:
-#   conda run -n isaac-pytorch python -m src.train_student_vehicle_goal_multiagent_rsl_rl \
+#   PYTHONPATH=. python src/train_student_vehicle_goal_multiagent_rsl_rl.py \
 #     --config configs/scene_factory/goal_reaching_smoke.yaml
 #
 # Purpose:

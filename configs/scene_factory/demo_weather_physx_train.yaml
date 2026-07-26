@@ -15,8 +15,10 @@
 # Expected wall-clock: ~30–60 min to 500 iterations on a single A100.
 #
 # To train:
-#   conda run -n isaac-pytorch python -u \
-#     -m src.train_student_vehicle_goal_multiagent_rsl_rl \
+#   bash run_demo_train.sh
+#
+# or equivalently:
+#   PYTHONPATH=. python -u src/train_student_vehicle_goal_multiagent_rsl_rl.py \
 #     --config configs/scene_factory/demo_weather_physx_train.yaml \
 #     --headless
 #
