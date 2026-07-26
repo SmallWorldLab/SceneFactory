@@ -45,6 +45,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_AGENT_LEVELS = [1, 2, 4, 8, 16, 32, 64]
+
+
+class _SweepDone(Exception):
+    """Internal: model mode finished; skip the search-mode loop."""
 # Substrings that identify an out-of-memory failure rather than a bug.
 _OOM_PATTERNS = (
     "out of memory",
@@ -376,7 +380,7 @@ def _simulated_trial(agents_per_env: int, num_envs: int, args: argparse.Namespac
     return Trial(agents_per_env, num_envs, "ok", casps=casps,
                  env_steps_per_s=900.0 / (1.0 + num_envs / 512.0),
                  spawned_agents=spawned, requested_agents=requested,
-                 peak_vram_mib=int(slots * 23 / 1024), wall_s=1.0,
+                 peak_vram_mib=int(3151 + 5.23 * num_envs + 1.9 * slots), wall_s=1.0,
                  detail="simulated")
 
 
@@ -409,6 +413,79 @@ def fit_vram_model(samples: list[tuple[int, int]]) -> tuple[float, float] | None
 def predict_max_envs(model: tuple[float, float], budget_mib: float) -> int:
     slope, intercept = model
     return max(1, int((budget_mib - intercept) / slope))
+
+
+def fit_global_vram_model(
+    samples: list[tuple[int, int, int]],
+) -> tuple[float, float, float] | None:
+    """Fit VRAM(N, A) = c0 + c_w*N + c_a*(N*A) over all agent levels at once.
+
+    Separates the per-world cost (roads, USD prims, ground) from the per-agent
+    cost (articulation, observation and rollout buffers), so a handful of small
+    cheap trials predicts the ceiling for EVERY agent level without searching
+    each one. Needs >= 3 samples spanning at least two distinct N*A values.
+    """
+    pts = [(n, a, v) for n, a, v in samples if n > 0 and a > 0 and v and v > 0]
+    if len(pts) < 3:
+        return None
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    A = np.array([[1.0, float(n), float(n * a)] for n, a, _ in pts])
+    y = np.array([float(v) for _, _, v in pts])
+    if np.linalg.matrix_rank(A) < 3:
+        return None
+    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+    c0, c_w, c_a = (float(x) for x in coef)
+    if c_w + c_a <= 0:
+        return None
+    return c0, c_w, c_a
+
+
+def predict_max_envs_for_agents(
+    model: tuple[float, float, float], agents: int, budget_mib: float
+) -> int:
+    c0, c_w, c_a = model
+    denom = c_w + c_a * agents
+    if denom <= 0:
+        return 1
+    return max(1, int((budget_mib - c0) / denom))
+
+
+def calibrate(
+    args: argparse.Namespace, workdir: Path, trials: list[Trial], levels: list[int]
+) -> list[tuple[int, int, int]]:
+    """Cheap small trials spanning (N, A), used to fit the global model.
+
+    Every probe is deliberately small: trial cost is linear in world count, so
+    calibration is nearly free compared with a single probe near the ceiling.
+    """
+    lo, hi = min(levels), max(levels)
+    plan = [
+        (args.calib_envs, lo),
+        (args.calib_envs * 2, lo),
+        (args.calib_envs * 4, lo),
+        (args.calib_envs * 2, hi),
+    ]
+    if len(levels) > 2:
+        plan.append((args.calib_envs * 2, levels[len(levels) // 2]))
+
+    print(f"  calibration: {len(plan)} small trials to fit the memory model", flush=True)
+    samples: list[tuple[int, int, int]] = []
+    for n, a in plan:
+        n = max(args.min_envs, min(args.max_envs, n))
+        tr = run_trial(agents_per_env=a, num_envs=n, args=args, workdir=workdir, tag="_calib")
+        trials.append(tr)
+        casps = f"{tr.casps:,.0f}" if tr.casps else "-"
+        print(
+            f"    calib agents={a:>3} envs={n:>5}  {tr.verdict:<10} "
+            f"vram={tr.peak_vram_mib or '-'} MiB  CASPS={casps}  ({tr.wall_s:.0f}s)",
+            flush=True,
+        )
+        if tr.verdict == "ok" and tr.peak_vram_mib:
+            samples.append((n, a, tr.peak_vram_mib))
+    return samples
 
 
 # --------------------------------------------------------------------------- #
@@ -510,6 +587,100 @@ def sweep_agent_level(
         else:
             bad = mid
     return good
+
+
+def run_model_mode(
+    args: argparse.Namespace,
+    workdir: Path,
+    trials: list[Trial],
+    levels: list[int],
+    budget_mib: float,
+    ceilings: dict[int, int | None],
+    measured: dict[int, Trial],
+) -> None:
+    """Calibrate once, solve each level, confirm with one trial.
+
+    Trial cost is linear in world count, so the expensive probes are the ones
+    near the ceiling. Rather than searching for each level, fit VRAM(N, A) from
+    cheap small trials and solve. Levels run cheapest-first (highest agents ->
+    fewest worlds) so every confirmation refines the model before the costly
+    low-agent levels are attempted.
+    """
+    samples = calibrate(args, workdir, trials, levels)
+    model = fit_global_vram_model(samples)
+    if model is None:
+        print("  [model] calibration failed; falling back to search mode\n", flush=True)
+        seed = args.seed_envs
+        for a in levels:
+            ceilings[a] = sweep_agent_level(
+                a, seed_envs=seed, args=args, workdir=workdir,
+                trials=trials, budget_mib=budget_mib,
+            )
+            seed = max(args.min_envs, (ceilings[a] or seed) // 2)
+        return
+
+    c0, c_w, c_a = model
+    print(
+        f"\n  [model] VRAM(N,A) = {c0:.0f} + {c_w:.2f}*N + {c_a:.2f}*N*A  MiB"
+        f"   (budget {budget_mib:.0f} MiB)",
+        flush=True,
+    )
+    for a in levels:
+        print(f"          agents={a:>3} -> predicted ceiling "
+              f"{predict_max_envs_for_agents(model, a, budget_mib):>6} worlds", flush=True)
+    print("", flush=True)
+
+    # Cheapest first: high agents/world needs the fewest worlds.
+    for a in sorted(levels, reverse=True):
+        pred = predict_max_envs_for_agents(model, a, budget_mib)
+        # Undershoot deliberately. A pass yields the ceiling AND the CASPS
+        # measurement; an overshoot costs a full expensive trial for a "no".
+        target = max(args.min_envs, min(args.max_envs, int(pred * args.undershoot)))
+        print(f"  agents/world = {a}: predicted {pred}, confirming at {target}", flush=True)
+
+        warm = min(args.warmup_iterations, max(0, args.measure_iterations - 1))
+        iters = args.measure_iterations if args.measure_iterations > 0 else args.iterations
+        tr = run_trial(
+            agents_per_env=a, num_envs=target, args=args, workdir=workdir,
+            iterations=iters, warmup_iters=warm, tag="_confirm",
+        )
+        trials.append(tr)
+        casps = f"{tr.casps:,.0f}" if tr.casps else "-"
+        flag = "  <-- spawned < requested" if tr.shortfall else ""
+        print(f"    agents={a:>3}  envs={target:>6}  {tr.verdict:<10} CASPS={casps:>10}  "
+              f"vram={tr.peak_vram_mib or '-'} MiB  ({tr.wall_s:.0f}s){flag}", flush=True)
+
+        if tr.verdict == "ok":
+            ceilings[a] = target
+            measured[a] = tr
+            if tr.peak_vram_mib:
+                samples.append((target, a, tr.peak_vram_mib))
+        else:
+            # One backed-off retry, then give up on this level rather than
+            # paying repeated large-N failures.
+            retry = max(args.min_envs, int(target * args.backoff))
+            print(f"    backing off to {retry}", flush=True)
+            tr2 = run_trial(
+                agents_per_env=a, num_envs=retry, args=args, workdir=workdir,
+                iterations=iters, warmup_iters=warm, tag="_confirm2",
+            )
+            trials.append(tr2)
+            casps = f"{tr2.casps:,.0f}" if tr2.casps else "-"
+            print(f"    agents={a:>3}  envs={retry:>6}  {tr2.verdict:<10} CASPS={casps:>10}  "
+                  f"({tr2.wall_s:.0f}s)", flush=True)
+            if tr2.verdict == "ok":
+                ceilings[a] = retry
+                measured[a] = tr2
+                if tr2.peak_vram_mib:
+                    samples.append((retry, a, tr2.peak_vram_mib))
+            else:
+                ceilings[a] = None
+
+        # Refit with the new large-N point; small-N extrapolation can drift.
+        refit = fit_global_vram_model(samples)
+        if refit:
+            model = refit
+        print("", flush=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -624,6 +795,18 @@ def main() -> int:
                    help="leading iterations discarded from the confirmation run; the first "
                         "absorbs CUDA context creation, kernel autotune and Fabric settling")
     p.add_argument("--timeout", type=float, default=1800.0, help="per-trial seconds")
+    p.add_argument("--mode", choices=["model", "search"], default="model",
+                   help="'model' (default) calibrates on cheap small trials, fits "
+                        "VRAM(N,A) and confirms each level with one run. 'search' is the "
+                        "old doubling+bisection, which costs far more because trial time "
+                        "is linear in world count.")
+    p.add_argument("--calib-envs", type=int, default=96,
+                   help="smallest world count used for calibration trials")
+    p.add_argument("--undershoot", type=float, default=0.93,
+                   help="confirm at this fraction of the predicted ceiling; undershooting "
+                        "yields a usable measurement, overshooting yields only a failure")
+    p.add_argument("--backoff", type=float, default=0.80,
+                   help="retry factor if the confirmation trial fails")
     p.add_argument("--vram-fraction", type=float, default=0.95,
                    help="fraction of total VRAM the model may predict into")
     p.add_argument("--timeout-per-env", type=float, default=0.6,
@@ -687,6 +870,10 @@ def main() -> int:
     ceilings: dict[int, int | None] = {}
     measured: dict[int, Trial] = {}
     try:
+        if args.mode == "model":
+            run_model_mode(args, workdir, trials, levels, budget_mib, ceilings, measured)
+            raise _SweepDone
+
         seed = args.seed_envs
         for a in levels:
             print(f"  agents/world = {a}  (seed {seed})", flush=True)
@@ -718,6 +905,8 @@ def main() -> int:
             # Memory scales roughly with total agent slots, so the next level
             # (2x agents) should land near half the worlds.
             seed = max(args.min_envs, (ceiling or seed) // 2)
+    except _SweepDone:
+        pass
     finally:
         if trials:
             write_outputs(args.out, trials, ceilings, header, measured)
