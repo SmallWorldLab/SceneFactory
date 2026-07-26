@@ -191,6 +191,18 @@ def classify_failure(stdout: str, stderr: str, returncode: int) -> tuple[str, st
 # a single trial
 # --------------------------------------------------------------------------- #
 
+def _tail_line(path: Path, *, max_len: int = 110) -> str:
+    """Last non-empty line of a growing log, for heartbeat output."""
+    try:
+        lines = [ln.strip() for ln in path.read_text(errors="replace").splitlines() if ln.strip()]
+    except OSError:
+        return ""
+    if not lines:
+        return "(no output yet)"
+    line = lines[-1]
+    return line[:max_len] + ("..." if len(line) > max_len else "")
+
+
 def gpu_index(device: str) -> int:
     if ":" in device:
         return int(device.split(":")[1])
@@ -256,31 +268,46 @@ def run_trial(
     env["PYTHONPATH"] = str(REPO_ROOT)
 
     started = time.time()
-    peak_vram = [0]
+    peak_vram = 0
+    # Isaac Sim emits far more than a pipe buffer holds during startup. Capturing
+    # to subprocess.PIPE without draining it deadlocks the child on write, so the
+    # streams go to files and are read back after exit.
+    out_path = workdir / f"trial_a{agents_per_env}_n{num_envs}{tag}.log"
+    err_path = workdir / f"trial_a{agents_per_env}_n{num_envs}{tag}.err"
+    last_beat = started
     try:
-        proc = subprocess.Popen(
-            cmd, cwd=str(REPO_ROOT), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        # Poll VRAM while it runs; PhysX/USD allocate outside torch, so
-        # torch.cuda counters would undercount badly.
-        while proc.poll() is None:
-            used, _ = gpu_free_mib(idx)
-            if used > peak_vram[0]:
-                peak_vram[0] = used
-            if time.time() - started > args.timeout:
-                proc.kill()
-                proc.wait(timeout=60)
-                return Trial(
-                    agents_per_env, num_envs, "timeout",
-                    requested_agents=agents_per_env * num_envs,
-                    peak_vram_mib=peak_vram[0] or None,
-                    wall_s=time.time() - started,
-                    detail=f"exceeded --timeout {args.timeout}s",
-                )
-            time.sleep(2.0)
-        stdout, stderr = proc.communicate(timeout=120)
-        rc = proc.returncode
+        with out_path.open("w") as fout, err_path.open("w") as ferr:
+            proc = subprocess.Popen(
+                cmd, cwd=str(REPO_ROOT), env=env, stdout=fout, stderr=ferr, text=True,
+            )
+            # Poll VRAM while it runs; PhysX/USD allocate outside torch, so
+            # torch.cuda counters would undercount badly.
+            while proc.poll() is None:
+                used, _ = gpu_free_mib(idx)
+                if used > peak_vram:
+                    peak_vram = used
+                now = time.time()
+                if args.heartbeat > 0 and (now - last_beat) >= args.heartbeat:
+                    last_beat = now
+                    print(
+                        f"        ... {now - started:5.0f}s  vram={used if used >= 0 else '?'} MiB"
+                        f"  | {_tail_line(out_path)}",
+                        flush=True,
+                    )
+                if now - started > args.timeout:
+                    proc.kill()
+                    proc.wait(timeout=60)
+                    return Trial(
+                        agents_per_env, num_envs, "timeout",
+                        requested_agents=agents_per_env * num_envs,
+                        peak_vram_mib=peak_vram or None,
+                        wall_s=time.time() - started,
+                        detail=f"exceeded --timeout {args.timeout}s; see {out_path}",
+                    )
+                time.sleep(2.0)
+            rc = proc.returncode
+        stdout = out_path.read_text(errors="replace")
+        stderr = err_path.read_text(errors="replace")
     except Exception as exc:  # noqa: BLE001
         return Trial(
             agents_per_env, num_envs, "error",
@@ -294,7 +321,7 @@ def run_trial(
         return Trial(
             agents_per_env, num_envs, verdict,
             requested_agents=agents_per_env * num_envs,
-            peak_vram_mib=peak_vram[0] or None, wall_s=wall, detail=detail,
+            peak_vram_mib=peak_vram or None, wall_s=wall, detail=detail,
         )
 
     casps, steps_s, spawned = read_casps_from_tensorboard(log_dir, warmup_iters=warmup_iters)
@@ -302,7 +329,7 @@ def run_trial(
         agents_per_env, num_envs, "ok",
         casps=casps, env_steps_per_s=steps_s, spawned_agents=spawned,
         requested_agents=agents_per_env * num_envs,
-        peak_vram_mib=peak_vram[0] or None, wall_s=wall,
+        peak_vram_mib=peak_vram or None, wall_s=wall,
         detail="" if casps is not None else "ran, but no Perf/CASPS scalar found",
     )
 
@@ -511,6 +538,12 @@ def main() -> int:
                    help="leading iterations discarded from the confirmation run; the first "
                         "absorbs CUDA context creation, kernel autotune and Fabric settling")
     p.add_argument("--timeout", type=float, default=1800.0, help="per-trial seconds")
+    p.add_argument("--heartbeat", type=float, default=30.0,
+                   help="seconds between progress lines while a trial runs (0 disables). "
+                        "A trial is an Isaac Sim boot plus a world build and can take many "
+                        "minutes before it prints a result.")
+    p.add_argument("--keep-logs", action="store_true",
+                   help="keep per-trial stdout/stderr logs under --out instead of discarding")
     p.add_argument("--tolerance", type=float, default=0.12,
                    help="stop bisecting at this relative bracket width")
     p.add_argument("--force", action="store_true",
@@ -590,6 +623,18 @@ def main() -> int:
     finally:
         if trials:
             write_outputs(args.out, trials, ceilings, header, measured)
+        # Preserve logs for anything that did not pass, so a failure is debuggable
+        # after the temp dir goes away.
+        keep = args.keep_logs or any(t.verdict != "ok" for t in trials)
+        if keep and not args.dry_run:
+            dest = args.out / "trial_logs"
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in list(workdir.glob("*.log")) + list(workdir.glob("*.err")):
+                try:
+                    shutil.copy2(f, dest / f.name)
+                except OSError:
+                    pass
+            print(f"\n[logs] per-trial stdout/stderr copied to {dest}")
         shutil.rmtree(workdir, ignore_errors=True)
     return 0
 
