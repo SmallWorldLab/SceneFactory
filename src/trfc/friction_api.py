@@ -117,9 +117,45 @@ class AllWetRoadParameters:
     tire_width_m: float = 0.205
     contact_patch_length_m: float = 0.164
     contact_patch_width_m: float = 0.125
+    # Diagnostic only. Reported on FrictionEstimate for traceability; NOT used in
+    # Eq. (12) any more -- see squeeze_film_coefficient_a below.
     contact_patch_area_m2: float | None = None
     wheel_radius_m: float = 0.316
     tread_radius_m: float = 0.103
+
+    # "A" from Eq. (12).  The paper prints it in the denominator but never defines
+    # it: the where-clause after Eq. (13) defines gamma, r0, p, L, h_min, h0,
+    # epsilon, rho and b, and omits A.  It is DIMENSIONLESS, by dimensional
+    # analysis of Eq. (12):
+    #
+    #   [12 v gamma r0^2 / (A pi p L)] * [1/(h^2 + 2 eps h)]
+    #     = (m/s * Pa*s * m^2) / (A * Pa * m) * m^-2
+    #     = (m^2 / A) * m^-2  =  1/A
+    #
+    # Y_R is a length RATIO, so the product must be dimensionless, so A must be.
+    # This code previously passed the nominal footprint AREA (L*B = 0.0205 m^2)
+    # here, which is dimensionally inconsistent and inflates the correction term
+    # by ~49x -- the direct cause of the mu-cliffs-to-zero bug.
+    #
+    # Value calibrated against the paper's own Fig. 6 (left panel), whose x-axis
+    # crossings the paper defines as "the hydroplaning velocity of the vehicle
+    # under the corresponding water film thickness".
+    #
+    # The calibration condition is mu = 0, NOT Y_R = 0.  Hydroplaning in Eq. (15)
+    # occurs when the hydrodynamic lift cancels the contact term, theta*Y_R = Y_F,
+    # which is reached while Y_R is still comfortably positive.  Anchoring on
+    # Y_R = 0 instead gives A = 2.75 and puts every crossing ~18 km/h too early.
+    #
+    # Weighted least squares over the three readable crossings (h = 20 mm
+    # down-weighted -- it is the fuzziest read) gives A = 4.05:
+    #
+    #     h = 5 mm   paper 100 km/h   model 103.8   (+3.8)
+    #     h = 10 mm  paper  90 km/h   model  85.5   (-4.5)
+    #     h = 20 mm  paper ~77 km/h   model  71.5   (-6.0)
+    #
+    # See docs/friction_model.md for the full derivation and for the two
+    # residual gaps this does NOT close.
+    squeeze_film_coefficient_a: float = 4.05
 
     # Common physical parameters / known parameters from Table 4.
     water_density_kg_per_m3: float = 1.05e3
@@ -133,7 +169,21 @@ class AllWetRoadParameters:
     sigma2: float = 0.0
     mu_c: float = 0.46
     mu_s: float = 1.51
-    alpha: float = 0.5
+    # Stribeck exponent in g(v_r) = mu_c + (mu_s - mu_c) exp(-|v_r/v_s|^alpha).
+    # NOT specified anywhere in the paper -- Table 4 lists sigma0, sigma2, mu_c,
+    # mu_s and beta1..beta4 and omits alpha.  It was previously assumed to be 0.5.
+    # Calibrated here against the paper's OWN Tables 2 and 3 (the data the paper
+    # itself regressed on).  Effect, GripTester geometry:
+    #
+    #     alpha        Table 2 RMSE    Table 3 RMSE
+    #     0.50 (old)      0.0611          0.0554
+    #     0.90 (now)      0.0405          0.0206
+    #     paper reports   0.023           0.023
+    #
+    # Nearly orthogonal to squeeze_film_coefficient_a: refitting A at each alpha
+    # returns 4.05 throughout, because alpha governs the calibrated sub-mm range
+    # and A governs the hydroplaning crossings at 5-20 mm.
+    alpha: float = 0.90
     b1: float = 4.8916
     b2: float = -7.91
     b3: float = 3.01
@@ -412,10 +462,14 @@ def _contact_patch_length_ratio(
     if h0_m <= 0.0:
         return 1.0
 
-    # Printed in the paper as: 12 v γ r0^2 / (A π p L) * (...)
-    # The paper does not define A explicitly, so use either an explicit override
-    # or the nominal footprint area implied by the reported patch length/width.
-    contact_patch_area_m2 = _contact_patch_area_m2(params)
+    # Eq. (12): Y_R = 1 - [12 v γ r0^2 / (A π p L)] * (1/(h_min^2 + 2εh_min)
+    #                                                - 1/(h0^2   + 2εh0))
+    #
+    # A is DIMENSIONLESS (see squeeze_film_coefficient_a for the dimensional
+    # argument and the Fig. 6 calibration).  Passing an AREA here -- as this code
+    # did until now -- makes the bracket product carry units of 1/m^2 and
+    # over-weights the correction by ~49x, which drove Y_R negative for any
+    # h0 > h_min and produced a hard mu = 0 cliff at h = h_min/0.01 = 0.8 mm.
     prefactor = (
         12.0
         * vehicle_speed_mps
@@ -423,7 +477,7 @@ def _contact_patch_length_ratio(
         * params.tread_radius_m
         * params.tread_radius_m
         / (
-            contact_patch_area_m2
+            params.squeeze_film_coefficient_a
             * math.pi
             * params.tire_pressure_pa
             * params.contact_patch_length_m
