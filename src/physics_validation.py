@@ -208,7 +208,19 @@ def run_physics_validation(env, run_dir: Path) -> None:
 
     out_path = run_dir / "physics_validation_report.json"
     out_path.write_text(json.dumps(report, indent=2))
+
+    # The JSON is for tooling. Write the same human-readable report the printer
+    # produces to a .txt as well -- otherwise the only readable form is buried in
+    # the Isaac Sim console log.
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _print_report(report)
+    txt_path = run_dir / "physics_validation_report.txt"
+    txt_path.write_text(buf.getvalue())
     print(f"[PhysicsValidation] Report → {out_path}", flush=True)
+    print(f"[PhysicsValidation] Readable report → {txt_path}", flush=True)
 
 
 # ── Analysis ──────────────────────────────────────────────────────────────────

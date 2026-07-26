@@ -186,7 +186,8 @@ def check_traction_probe(args: argparse.Namespace) -> None:
     """
     out_dir = REPO_ROOT / "artifacts" / "diagnose" / "traction_probe"
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT),
-           "CUDA_VISIBLE_DEVICES": _gpu_index(args.device)}
+           "CUDA_VISIBLE_DEVICES": _gpu_index(args.device),
+           "TP_DRIVE_STEPS": str(args.drive_steps)}
     cmd = [
         sys.executable, "-u", "src/train_student_vehicle_goal_multiagent_rsl_rl.py",
         "--config", str(args.config), "--headless",
@@ -228,8 +229,19 @@ def check_traction_probe(args: argparse.Namespace) -> None:
                f"(idle agent0={idle0}, agents1+={idle_rest}) - {data.get('verdict', '')}")
     else:
         speeds = ", ".join(f"{float(v):.2f}" for v in per_agent)
+        spread = max(per_agent) - min(per_agent)
+        note = ""
+        if data.get("speed_plateaued") is False:
+            note = " -- speed STILL RISING at the end; raise --drive-steps"
+        elif spread > 0.5:
+            note = f" -- spread {spread:.2f} m/s across agents, check for index dependence"
+        straight = data.get("path_straightness")
+        traj = f", straightness {straight:.2f}" if isinstance(straight, (int, float)) else ""
         record("traction-probe", PASS,
-               f"all {len(per_agent)} agents moving ({speeds} m/s); {data.get('verdict', '')}")
+               f"all {len(per_agent)} agents moving ({speeds} m/s{traj}){note}")
+        txt = sorted(report[-1].parent.glob("traction_probe.txt"))
+        if txt:
+            print(f"        readable report: {txt[-1].relative_to(REPO_ROOT)}")
 
 
 def check_physics_validation(args: argparse.Namespace) -> None:
@@ -248,7 +260,9 @@ def check_physics_validation(args: argparse.Namespace) -> None:
     log = _save_log("physics_validation", out)
     report = sorted(out_dir.rglob("physics_validation_report.json"))
     if rc == 0 and report:
-        record("physics-validation", PASS, f"report at {report[-1].relative_to(REPO_ROOT)}")
+        txt = report[-1].with_suffix("").with_name("physics_validation_report.txt")
+        where = txt if txt.exists() else report[-1]
+        record("physics-validation", PASS, f"readable report at {where.relative_to(REPO_ROOT)}")
     else:
         # Surface the traceback, not just the last line -- the last line of an
         # Isaac Sim shutdown is rarely the actual error.
@@ -272,6 +286,9 @@ def main() -> int:
     p.add_argument("--gpu-timeout", type=float, default=1800.0)
     p.add_argument("--min-speed-mps", type=float, default=0.5,
                    help="per-agent mean speed below which an agent counts as stalled")
+    p.add_argument("--drive-steps", type=int, default=600,
+                   help="traction-probe drive steps. Too few and a healthy vehicle is "
+                        "still accelerating when the probe ends, which reads as a low speed.")
     p.add_argument("--skip-physics-validation", action="store_true")
     args = p.parse_args()
 

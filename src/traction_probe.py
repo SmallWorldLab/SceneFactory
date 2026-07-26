@@ -49,7 +49,10 @@ import torch
 
 SETTLE_STEPS = int(os.environ.get("TP_SETTLE_STEPS", "60"))   # spawn drop + suspension settle
 RAMP_STEPS = int(os.environ.get("TP_RAMP_STEPS", "20"))       # throttle ramp (suppress launch impulse)
-DRIVE_STEPS = int(os.environ.get("TP_DRIVE_STEPS", "240"))    # scripted full throttle
+DRIVE_STEPS = int(os.environ.get("TP_DRIVE_STEPS", "600"))    # scripted full throttle
+# 240 steps (~8 s) was too short to tell "healthy but still accelerating" from
+# "stuck at a low speed": the vehicle had not reached its plateau, so the mean
+# speed understated it. 600 (~20 s) lets the speed trace flatten.
 IDLE_SPEED_MPS = 0.5                                          # matches choco_idle_speed_threshold_mps
 WHEEL_RADIUS_M = 0.35
 
@@ -95,6 +98,8 @@ def run_traction_probe(env, run_dir: Path) -> None:
     max_omega = torch.zeros((n_agent, n_env))
     sum_omega = torch.zeros((n_agent, n_env))
     n_samples = 0
+    speed_trace: list[float] = []
+    path_len = torch.zeros_like(sum_speed)
     max_dist_origin = torch.zeros((n_agent, n_env))
     z_trace: list[tuple[int, float, float, float]] = []
     spawn_xy: torch.Tensor | None = None
@@ -183,6 +188,14 @@ def run_traction_probe(env, run_dir: Path) -> None:
             max_omega = torch.maximum(max_omega, omega)
             sum_omega += omega
             n_samples += 1
+            # Trajectory quality: a speed trace that is still rising at the end
+            # means the probe stopped too early, not that the vehicle is slow.
+            # Path length vs net displacement says whether it drove straight or
+            # milled around.
+            speed_trace.append(float(speed[env._spawned_agent_mask.detach().cpu()].mean())
+                               if int(env._spawned_agent_mask.sum()) else float(speed.mean()))
+            if last_xy is not None:
+                path_len += torch.norm(xy - last_xy, dim=-1)
 
         last_xy, z_end = xy, z
 
@@ -192,6 +205,12 @@ def run_traction_probe(env, run_dir: Path) -> None:
                   f"mean z={z.mean():.3f} m", flush=True)
 
     assert start_xy is not None and z_settled is not None and last_xy is not None
+    # Quartile means of the drive-window speed trace, and whether it plateaued.
+    _q = max(1, len(speed_trace) // 4)
+    q_means = [sum(speed_trace[i * _q:(i + 1) * _q]) / max(1, len(speed_trace[i * _q:(i + 1) * _q]))
+               for i in range(4)] if speed_trace else [0.0] * 4
+    # Plateaued if the last quarter is within 5% of the third quarter.
+    plateaued = bool(q_means[2] > 0 and abs(q_means[3] - q_means[2]) / q_means[2] < 0.05)
     mean_speed = sum_speed / max(1, n_samples)
     mean_omega = sum_omega / max(1, n_samples)
     displacement = torch.norm(last_xy - start_xy, dim=-1)
@@ -281,7 +300,61 @@ def run_traction_probe(env, run_dir: Path) -> None:
         "idle_fraction_agents_1plus": rest,
         "per_agent_mean_speed": [float(x) for x in mean_speed.mean(dim=1)],
         "per_agent_idle_fraction": [float(x) for x in idle.float().mean(dim=1)],
+        "drive_steps": DRIVE_STEPS,
+        "speed_quartile_means_mps": q_means,
+        "speed_plateaued": plateaued,
+        "mean_path_length_m": float(path_len.mean()),
+        "mean_net_displacement_m": float(displacement.mean()),
+        "path_straightness": float((displacement / path_len.clamp(min=1e-6)).mean()),
         "verdict": verdict,
     }
     (run_dir / "traction_probe.json").write_text(json.dumps(summary, indent=2))
+
+    # Human-readable sibling of the JSON. The JSON is for tooling; this is what
+    # a person opens.
+    q = summary["speed_quartile_means_mps"]
+    lines = [
+        "=" * 66,
+        "  TRACTION PROBE",
+        "=" * 66,
+        "",
+        f"  Question: does every agent actually drive, or only agent 0?",
+        f"  Config:   {n_env} worlds x {n_agent} agents, {DRIVE_STEPS} drive steps "
+        f"({DRIVE_STEPS * dt:.1f} s)",
+        f"            ground_cuboid_size_m={summary['ground_cuboid_size_m']} "
+        f"wheel_friction_cap={summary['wheel_friction_cap']}",
+        "",
+        "  PER-AGENT (averaged over worlds) -- these must not diverge",
+        f"    {'agent':>6} {'mean v (m/s)':>14} {'idle %':>9}",
+    ]
+    for a in range(n_agent):
+        lines.append(f"    {a:>6} {float(mean_speed[a].mean()):>14.3f} "
+                     f"{100.0 * float(idle[a].float().mean()):>9.1f}")
+    spread = (max(summary["per_agent_mean_speed"]) - min(summary["per_agent_mean_speed"])) \
+        if summary["per_agent_mean_speed"] else 0.0
+    lines += [
+        f"    spread across agents: {spread:.3f} m/s"
+        f"{'  <-- agent-index dependence, investigate' if spread > 0.5 else '  (uniform)'}",
+        "",
+        "  SPEED TRACE over the drive window (is it still accelerating?)",
+        f"    Q1 {q[0]:.2f}   Q2 {q[1]:.2f}   Q3 {q[2]:.2f}   Q4 {q[3]:.2f}  m/s",
+        f"    plateaued: {summary['speed_plateaued']}"
+        + ("" if summary["speed_plateaued"] else
+           "   <-- still rising; increase TP_DRIVE_STEPS before reading the mean"),
+        "",
+        "  TRAJECTORY",
+        f"    path length      {summary['mean_path_length_m']:.1f} m",
+        f"    net displacement {summary['mean_net_displacement_m']:.1f} m",
+        f"    straightness     {summary['path_straightness']:.3f}  (1.0 = straight line)",
+        "",
+        f"  slip {summary['mean_slip']:.3f}   "
+        f"(near 1.0 = wheels spinning with no grip)",
+        "",
+        "-" * 66,
+        f"  VERDICT: {verdict}",
+        "-" * 66,
+        "",
+    ]
+    (run_dir / "traction_probe.txt").write_text("\n".join(lines))
+    print("\n".join(lines), flush=True)
     print(f"[TractionProbe] wrote {run_dir/'traction_probe.csv'} and traction_probe.json", flush=True)
