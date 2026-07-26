@@ -163,10 +163,27 @@ def _dry_ground_material_cfg(config: StudentTunableConfig) -> sim_utils.RigidBod
     )
 
 
-def _spawn_local_ground_plane(prim_path: str, physics_material: sim_utils.RigidBodyMaterialCfg):
+def _spawn_local_ground_plane(prim_path: str, physics_material: sim_utils.RigidBodyMaterialCfg,
+                              size_m: float = 1000.0, contact_offset: float = 0.10):
     ground_cfg = sim_utils.CuboidCfg(
-        size=(1000.0, 1000.0, 1.0),
-        collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+        size=(float(size_m), float(size_m), 1.0),
+        # Widen the ground's contact_offset from the PhysX auto-default (~0.02 m).
+        # With the default, wheels of vehicles after agent 0 tunnel past the thin
+        # contact-generation band on the spawn-drop landing step and end up ~0.2 m
+        # INSIDE the cuboid, carrying no normal force (measured incoming joint
+        # force ~450 N vs ~30 kN when loaded).  The car high-centres and its
+        # driven wheels spin with no traction: the "stops once, never restarts"
+        # freeze.  A single agent never hits it; it starts at 2 agents, which is
+        # why single-agent validation never caught it.
+        #
+        # 0.10 m is empirical: 0.03 and 0.05 still bury agents, 0.08 catches all
+        # 8 at spawn_height 1.2, 0.10 also holds at 1.6.  rest_offset stays 0.0,
+        # so resting height is unchanged.  Configurable because the value was
+        # measured with 1000 m slabs overlapping nine deep; a single
+        # non-overlapping slab loses that redundancy and needs more.
+        collision_props=sim_utils.CollisionPropertiesCfg(
+            collision_enabled=True, contact_offset=float(contact_offset), rest_offset=0.0
+        ),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             rigid_body_enabled=True,
             kinematic_enabled=True,
@@ -182,6 +199,8 @@ def _spawn_ground(
     prim_path: str,
     physics_material: sim_utils.RigidBodyMaterialCfg,
     mode: str = "cuboid",
+    size_m: float = 1000.0,
+    contact_offset: float = 0.10,
 ):
     mode = str(mode).strip().lower()
     if mode == "plane":
@@ -194,7 +213,8 @@ def _spawn_ground(
         return
     if mode != "cuboid":
         raise ValueError(f"Unsupported ground mode: {mode!r}")
-    _spawn_local_ground_plane(prim_path, physics_material)
+    _spawn_local_ground_plane(prim_path, physics_material, size_m=size_m,
+                              contact_offset=contact_offset)
 
 
 def _hide_ground_visuals(prim_path: str) -> None:
