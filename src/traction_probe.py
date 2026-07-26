@@ -296,7 +296,7 @@ def run_traction_probe(env, run_dir: Path) -> None:
         "ground_mode": getattr(env.cfg, "ground_mode", None),
         "ground_cuboid_size_m": getattr(env.cfg, "ground_cuboid_size_m", None),
         "ground_contact_offset_m": getattr(env.cfg, "ground_contact_offset_m", None),
-        "env_spacing_m": getattr(env.cfg, "env_spacing", None),
+        "env_spacing_m": float(getattr(getattr(env.cfg, "scene", None), "env_spacing", float("nan"))),
         "wheel_friction_cap": getattr(env.cfg, "wheel_friction_cap", None),
         "scene_pool": getattr(env.cfg, "scene_factory_config_path", None),
         "mean_speed_mps": float(mean_speed.mean()),
@@ -306,6 +306,13 @@ def run_traction_probe(env, run_dir: Path) -> None:
         "idle_fraction_agent0": a0,
         "idle_fraction_agents_1plus": rest,
         "per_agent_mean_speed": [float(x) for x in mean_speed.mean(dim=1)],
+        "per_agent_z_settled_m": [float(x) for x in z_settled.mean(dim=1)],
+        "min_z_settled_m": float(z_settled.min()),
+        "slabs_overlap": bool(
+            str(getattr(env.cfg, "ground_mode", "")).lower() == "cuboid"
+            and float(getattr(getattr(env.cfg, "scene", None), "env_spacing", 0.0) or 0.0)
+            < float(getattr(env.cfg, "ground_cuboid_size_m", 0.0) or 0.0)
+        ),
         "per_agent_idle_fraction": [float(x) for x in idle.float().mean(dim=1)],
         "drive_steps": DRIVE_STEPS,
         "speed_quartile_means_mps": q_means,
@@ -330,7 +337,9 @@ def run_traction_probe(env, run_dir: Path) -> None:
         f"  Question: does every agent actually drive, or only agent 0?",
         f"  Config:   {n_env} worlds x {n_agent} agents, {DRIVE_STEPS} drive steps "
         f"({DRIVE_STEPS * dt:.1f} s)",
-        f"            ground_mode={summary['ground_mode']}  env_spacing={summary['env_spacing_m']} m",
+        f"            ground_mode={summary['ground_mode']}  env_spacing={summary['env_spacing_m']:.0f} m"
+        + ("   <-- SLABS OVERLAP (spacing < cuboid): each vehicle rests on several "
+           "worlds' slabs" if summary["slabs_overlap"] else ""),
         (f"            cuboid={summary['ground_cuboid_size_m']} m  "
          f"contact_offset={summary['ground_contact_offset_m']} m"
          if str(summary["ground_mode"]).lower() == "cuboid"
@@ -361,6 +370,11 @@ def run_traction_probe(env, run_dir: Path) -> None:
         f"    path length      {summary['mean_path_length_m']:.1f} m",
         f"    net displacement {summary['mean_net_displacement_m']:.1f} m",
         f"    straightness     {summary['path_straightness']:.3f}  (1.0 = straight line)",
+        "",
+        f"  GROUND CONTACT",
+        f"    min settled z {summary['min_z_settled_m']:+.3f} m"
+        + ("   <-- BELOW the surface: wheels penetrated the slab"
+           if summary["min_z_settled_m"] < -0.5 else "   (on the surface)"),
         "",
         f"  slip {summary['mean_slip']:.3f}   "
         f"(near 1.0 = wheels spinning with no grip)",

@@ -217,8 +217,10 @@ def check_traction_probe(args: argparse.Namespace) -> None:
         "--experiment_name", "diagnose", "--run_name", "traction_probe",
     ]
     if args.ground_mode != "config":
+        spacing = args.env_spacing_m or (args.ground_cuboid_size_m * 1.3)
         cmd += ["--ground_mode", args.ground_mode,
-                "--ground_cuboid_size_m", str(args.ground_cuboid_size_m)]
+                "--ground_cuboid_size_m", str(args.ground_cuboid_size_m),
+                "--env_spacing", str(spacing)]
     rc, out = _run(cmd, timeout=args.gpu_timeout, env=env)
     log = _save_log("traction_probe", out)
     if rc != 0:
@@ -253,10 +255,20 @@ def check_traction_probe(args: argparse.Namespace) -> None:
         speeds = ", ".join(f"{float(v):.2f}" for v in per_agent)
         spread = max(per_agent) - min(per_agent)
         note = ""
-        if data.get("speed_plateaued") is False:
-            note = " -- speed STILL RISING at the end; raise --drive-steps"
-        elif spread > 0.5:
-            note = f" -- spread {spread:.2f} m/s across agents, check for index dependence"
+        mean_v = sum(per_agent) / max(1, len(per_agent))
+        trend = str(data.get("speed_trend", ""))
+        if trend == "rising":
+            note = " -- speed still RISING at the end; raise --drive-steps"
+        elif trend == "falling":
+            note = " -- speed FALLING at the end; check collisions / agents leaving the slab"
+        # Relative, not absolute: 0.26 m/s spread on a 0.9 m/s mean is 28%.
+        if mean_v > 0 and (spread / mean_v) > 0.15:
+            note += f" -- per-agent spread {spread / mean_v:.0%} of mean, check index dependence"
+        z_min = data.get("min_z_settled_m")
+        if isinstance(z_min, (int, float)) and z_min < -0.5:
+            note += f" -- an agent settled {z_min:.2f} m BELOW the slab (penetration)"
+        if data.get("slabs_overlap"):
+            note += " -- slabs OVERLAP (spacing < cuboid)"
         straight = data.get("path_straightness")
         traj = f", straightness {straight:.2f}" if isinstance(straight, (int, float)) else ""
         _echo_report(out, "TRACTION PROBE")
@@ -354,6 +366,10 @@ def main() -> int:
                         "contact_offset fix only applies there; 'plane' cannot exercise it. "
                         "'config' leaves the config's own setting alone.")
     p.add_argument("--ground-cuboid-size-m", type=float, default=1000.0)
+    p.add_argument("--env-spacing-m", type=float, default=None,
+                   help="world spacing. Defaults to 1.3x the cuboid size so slabs do NOT "
+                        "overlap; with spacing < cuboid each vehicle rests on several "
+                        "worlds' slabs, which changes contact behaviour.")
     p.add_argument("--drive-steps", type=int, default=600,
                    help="traction-probe drive steps. Too few and a healthy vehicle is "
                         "still accelerating when the probe ends, which reads as a low speed.")
