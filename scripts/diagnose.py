@@ -304,10 +304,27 @@ def check_physics_validation(args: argparse.Namespace) -> None:
     if overall is True and not failed:
         record("physics-validation", PASS, "all three phases pass (longitudinal, lateral, friction)")
     else:
-        detail = f"phases failed: {', '.join(failed) or 'unknown'}"
+        p1 = data.get("phase1_longitudinal", {})
+        p3 = data.get("phase3_friction", {})
+        bits = []
+        if phases["longitudinal"] is False:
+            bits.append(
+                f"longitudinal: full-throttle peak {p1.get('full_throttle_peak_mps', float('nan')):.2f} m/s "
+                f"vs {p1.get('threshold_mps', float('nan')):.1f} expected"
+                + ("" if p1.get("grounded", True) else ", and not grounded")
+            )
+        if phases["lateral"] is False:
+            bits.append("lateral: turning symmetry or straight-line test failed")
+        if phases["friction"] is False:
+            bits.append(
+                f"friction: mu changes top speed by only "
+                f"{100 * p3.get('friction_effect_fraction', 0.0):.1f}% "
+                f"vs {100 * p3.get('threshold_effect', 0.0):.0f}% expected"
+            )
+        detail = "; ".join(bits) or f"phases failed: {', '.join(failed) or 'unknown'}"
         if overall is None:
             detail += " (report has no overall_pass field)"
-        record("physics-validation", FAIL, f"{detail}; see {log}")
+        record("physics-validation", FAIL, detail)
 
 
 # --------------------------------------------------------------------------- #

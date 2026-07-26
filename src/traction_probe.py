@@ -209,8 +209,12 @@ def run_traction_probe(env, run_dir: Path) -> None:
     _q = max(1, len(speed_trace) // 4)
     q_means = [sum(speed_trace[i * _q:(i + 1) * _q]) / max(1, len(speed_trace[i * _q:(i + 1) * _q]))
                for i in range(4)] if speed_trace else [0.0] * 4
-    # Plateaued if the last quarter is within 5% of the third quarter.
-    plateaued = bool(q_means[2] > 0 and abs(q_means[3] - q_means[2]) / q_means[2] < 0.05)
+    # Plateaued if the last quarter is within 5% of the third quarter. Direction
+    # matters: a FALLING trace is not "needs a longer window", it means the
+    # vehicle slowed down (collision, leaving the slab, spinning out).
+    _drift = ((q_means[3] - q_means[2]) / q_means[2]) if q_means[2] > 0 else 0.0
+    plateaued = bool(abs(_drift) < 0.05)
+    speed_trend = "plateau" if plateaued else ("rising" if _drift > 0 else "falling")
     mean_speed = sum_speed / max(1, n_samples)
     mean_omega = sum_omega / max(1, n_samples)
     displacement = torch.norm(last_xy - start_xy, dim=-1)
@@ -303,6 +307,8 @@ def run_traction_probe(env, run_dir: Path) -> None:
         "drive_steps": DRIVE_STEPS,
         "speed_quartile_means_mps": q_means,
         "speed_plateaued": plateaued,
+        "speed_trend": speed_trend,
+        "speed_trend_pct": round(100.0 * _drift, 1),
         "mean_path_length_m": float(path_len.mean()),
         "mean_net_displacement_m": float(displacement.mean()),
         "path_straightness": float((displacement / path_len.clamp(min=1e-6)).mean()),
@@ -338,9 +344,11 @@ def run_traction_probe(env, run_dir: Path) -> None:
         "",
         "  SPEED TRACE over the drive window (is it still accelerating?)",
         f"    Q1 {q[0]:.2f}   Q2 {q[1]:.2f}   Q3 {q[2]:.2f}   Q4 {q[3]:.2f}  m/s",
-        f"    plateaued: {summary['speed_plateaued']}"
+        f"    trend Q3->Q4: {summary['speed_trend']} ({summary['speed_trend_pct']:+.1f}%)"
         + ("" if summary["speed_plateaued"] else
-           "   <-- still rising; increase TP_DRIVE_STEPS before reading the mean"),
+           ("   <-- still accelerating; raise TP_DRIVE_STEPS"
+            if summary["speed_trend"] == "rising" else
+            "   <-- DECELERATING; check for collisions or agents leaving the slab")),
         "",
         "  TRAJECTORY",
         f"    path length      {summary['mean_path_length_m']:.1f} m",
