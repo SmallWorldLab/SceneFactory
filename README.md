@@ -172,8 +172,16 @@ fails, your directory layout does not match the diagram above.
 ### 5. Prepare scene data (required)
 
 Download the [Waymo Open Motion Dataset](https://waymo.com/open/data/motion/)
-(scenario protos, v1.2; accepting the Waymo licence is required) and place one or
-more `*.tfrecord` shards in `data/waymo_tfrecords/`.
+(accepting the Waymo licence is required) and place one or more `*.tfrecord`
+shards in `data/waymo_tfrecords/`.
+
+> **Get the right variant.** The converter reads the **`tf_example`** format —
+> it parses `roadgraph_samples/{xyz,dir,id,type,valid}` features. In the WOMD
+> bucket these are under `uncompressed/tf_example/training/`, with filenames like
+> `uncompressed_tf_example_training_training_tfexample.tfrecord-00000-of-01000`
+> (~1.2 GB each). The **`scenario`** protos under `uncompressed/scenario/` are a
+> different serialization and **will not parse** with this script. One shard is
+> plenty to start.
 
 The converter depends on `waymo-open-dataset-tf-2-12-0`, which
 [does not support Python 3.11](https://github.com/waymo-research/waymo-open-dataset/issues/868).
