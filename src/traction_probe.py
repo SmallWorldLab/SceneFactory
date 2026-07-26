@@ -280,7 +280,17 @@ def run_traction_probe(env, run_dir: Path) -> None:
     print(f"overall idle   {100*idle.float().mean():.1f}%   "
           f"mean slip {slip.mean():.3f}   mean speed {mean_speed.mean():.3f} m/s")
 
-    if mean_omega.mean() > 3.0 and mean_speed.mean() < 0.5:
+    # Grounding is checked BEFORE speed. A vehicle in free fall satisfies every
+    # "is it moving?" test -- it moves faster than any driving vehicle -- so a
+    # speed-first verdict calls a catastrophic failure a success.
+    frac_fallen = float((z_end < -1.0).float().mean())
+    if frac_fallen > 0.05 or float(z_settled.min()) < -0.5:
+        verdict = (
+            f"NOT ON THE GROUND -> {100 * frac_fallen:.0f}% of agents ended below -1 m "
+            f"(min settled z {float(z_settled.min()):.2f} m). They are falling, not driving. "
+            "Check that the ground actually covers every world."
+        )
+    elif mean_omega.mean() > 3.0 and mean_speed.mean() < 0.5:
         verdict = "WHEELS SPIN, BODY STILL -> zero normal force. Ground contact defect."
     elif mean_omega.mean() <= 3.0 and mean_speed.mean() < 0.5:
         verdict = "WHEELS ALSO STILL -> drive command never reached the joints. Not traction."
@@ -308,6 +318,8 @@ def run_traction_probe(env, run_dir: Path) -> None:
         "per_agent_mean_speed": [float(x) for x in mean_speed.mean(dim=1)],
         "per_agent_z_settled_m": [float(x) for x in z_settled.mean(dim=1)],
         "min_z_settled_m": float(z_settled.min()),
+        "frac_ended_below_ground": frac_fallen,
+        "grounded": bool(frac_fallen <= 0.05 and float(z_settled.min()) >= -0.5),
         "slabs_overlap": bool(
             str(getattr(env.cfg, "ground_mode", "")).lower() == "cuboid"
             and float(getattr(getattr(env.cfg, "scene", None), "env_spacing", 0.0) or 0.0)

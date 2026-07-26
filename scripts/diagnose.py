@@ -217,10 +217,10 @@ def check_traction_probe(args: argparse.Namespace) -> None:
         "--experiment_name", "diagnose", "--run_name", "traction_probe",
     ]
     if args.ground_mode != "config":
-        spacing = args.env_spacing_m or (args.ground_cuboid_size_m * 1.3)
         cmd += ["--ground_mode", args.ground_mode,
-                "--ground_cuboid_size_m", str(args.ground_cuboid_size_m),
-                "--env_spacing", str(spacing)]
+                "--ground_cuboid_size_m", str(args.ground_cuboid_size_m)]
+        if args.env_spacing_m is not None:
+            cmd += ["--env_spacing", str(args.env_spacing_m)]
     rc, out = _run(cmd, timeout=args.gpu_timeout, env=env)
     log = _save_log("traction_probe", out)
     if rc != 0:
@@ -241,6 +241,16 @@ def check_traction_probe(args: argparse.Namespace) -> None:
     # Assert, do not merely report. The historical defect is agent-index
     # dependent: agent 0 drives and agents 1..k sit with wheels spinning, so a
     # fleet mean can look healthy while most agents are stuck.
+    # Not grounded is a hard failure, not a note. Free fall passes any
+    # speed-based test by a wide margin.
+    if data.get("grounded") is False:
+        z_min = data.get("min_z_settled_m")
+        frac = data.get("frac_ended_below_ground")
+        record("traction-probe", FAIL,
+               f"agents are NOT ON THE GROUND: {100 * float(frac or 0):.0f}% ended below -1 m, "
+               f"min settled z {float(z_min or 0):.2f} m. {data.get('verdict', '')}")
+        return
+
     per_agent = data.get("per_agent_mean_speed") or []
     stalled = [i for i, v in enumerate(per_agent) if float(v) < args.min_speed_mps]
     idle0 = data.get("idle_fraction_agent0")
@@ -367,9 +377,10 @@ def main() -> int:
                         "'config' leaves the config's own setting alone.")
     p.add_argument("--ground-cuboid-size-m", type=float, default=1000.0)
     p.add_argument("--env-spacing-m", type=float, default=None,
-                   help="world spacing. Defaults to 1.3x the cuboid size so slabs do NOT "
-                        "overlap; with spacing < cuboid each vehicle rests on several "
-                        "worlds' slabs, which changes contact behaviour.")
+                   help="world spacing. Left at the config's value by default. NOTE: the "
+                        "released env spawns ONE cuboid at /World/ground, not one per world, "
+                        "so a spacing that puts a world outside that cuboid's extent drops "
+                        "its vehicles into free fall.")
     p.add_argument("--drive-steps", type=int, default=600,
                    help="traction-probe drive steps. Too few and a healthy vehicle is "
                         "still accelerating when the probe ends, which reads as a low speed.")
