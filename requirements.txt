@@ -1,0 +1,63 @@
+# SceneFactory Python dependencies.
+#
+# ---------------------------------------------------------------------------
+# THIS FILE IS NOT SUFFICIENT ON ITS OWN.
+#
+# SceneFactory depends on NVIDIA Isaac Sim and Isaac Lab, which are NOT
+# installable from this file:
+#
+#   * Isaac Sim 5.1.0 is distributed through NVIDIA's package index, not PyPI,
+#     and pulls ~14 GB of extension caches.
+#   * Isaac Lab is installed from a git checkout in editable mode, and its
+#     version must match the Isaac Sim version.
+#
+# Install those two first, following README.md "Installation" steps 2 and 3,
+# then run:
+#
+#     pip install -r requirements.txt
+#
+# Versions below are the ones verified end-to-end on Python 3.11 / Linux.
+# ---------------------------------------------------------------------------
+
+# --- Deep learning / RL -----------------------------------------------------
+# torch is installed as a dependency of isaacsim; pinned here so the version is
+# recorded. Do not install it before Isaac Sim or pip may resolve a different
+# CUDA build.
+torch==2.7.0
+rsl-rl-lib==3.1.2
+tensordict==0.13.0
+gymnasium==1.2.1
+
+# stable-baselines3 is required by src/eval_student_vehicle_goal_ppo.py, which
+# every eval and paper-reproduction script goes through
+# (isaaclab_rl.sb3.Sb3VecEnvWrapper). Omitting it makes all of them fail at
+# import time.
+stable-baselines3==2.7.0
+
+# --- Config, data, IO -------------------------------------------------------
+numpy==1.26.0
+pyyaml==6.0.2
+h5py==3.16.0
+toml==0.10.2
+
+# --- Analysis and figures ---------------------------------------------------
+scipy==1.15.3
+matplotlib==3.10.3
+plotly==6.9.0
+pillow==11.3.0
+imageio==2.37.0
+# NOTE: cv2 is provided by opencv-python-headless, which Isaac Sim installs
+# (4.11.0.86 as of isaacsim 5.1.0). Do not add opencv-python here — it pins
+# numpy>=2 and will make this file unresolvable against Isaac Sim's numpy 1.26.
+
+# --- Tests ------------------------------------------------------------------
+pytest==9.1.1
+
+# ---------------------------------------------------------------------------
+# NOT included here, on purpose:
+#
+#   tensorflow, waymo-open-dataset-tf-2-12-0
+#     Needed only by scripts/convert_waymo_tfrecord_to_json.py, which must run
+#     in a separate Python 3.10 environment (waymo-open-dataset does not
+#     support Python 3.11). See README.md "Preparing scene data".
+# ---------------------------------------------------------------------------
