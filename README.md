@@ -309,6 +309,20 @@ For the complete list: `python src/train_student_vehicle_goal_multiagent_rsl_rl.
 
 ---
 
+## GPU capacity benchmark
+
+How many worlds and agents fit on your GPU, and the throughput they sustain:
+
+```bash
+PYTHONPATH=. python scripts/benchmark_casps_sweep.py --device cuda:0
+```
+
+Results depend strongly on the observation width, which the output records.
+See **[docs/gpu_benchmark.md](docs/gpu_benchmark.md)** for the method, the exact
+commands behind the reported sweeps, and how to read the output.
+
+---
+
 ## Reproducing paper results
 
 All paper experiments use the checkpoints in `checkpoints/` — no download
@@ -403,7 +417,8 @@ SceneFactory/
 ├── checkpoints/                                  # pre-trained policies
 ├── docs/
 │   ├── configuration.md                          # every config key
-│   └── friction_model.md                         # weather-to-friction model
+│   ├── friction_model.md                         # weather-to-friction model
+│   └── gpu_benchmark.md                          # capacity/throughput sweep
 ├── scripts/
 │   ├── check_install.py                          # pre-flight check
 │   ├── convert_waymo_tfrecord_to_json.py         # TFRecord → scene JSON
