@@ -344,6 +344,8 @@ parser.add_argument(
         "scene_factory_policy_eval",
         "friction_ruler",
         "bicycle_sinwave_demo",
+        "physics_validation",
+        "traction_probe",
     ),
     default=str(_cfg_value(file_cfg, "test", "mode", "none")),
     help=(
@@ -1047,6 +1049,26 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
             print("[INFO][SceneFactory] bicycle_sinwave_demo enables Fabric for headless video capture.")
         cfg.sim.use_fabric = True if bool(args_cli.video) else bool(args_cli.use_fabric)
         print("[INFO][SceneFactory] bicycle_sinwave_demo: dynamics_mode=bicycle, invincible=True", flush=True)
+    elif cfg.test_mode == "physics_validation":
+        cfg.use_scene_factory_roads = False
+        cfg.friction_ruler_mode = True
+        cfg.friction_ruler_mu_values = str(_cfg_value(
+            file_cfg, "env", "friction_ruler_mu_values",
+            "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.10,0.25,0.40,0.60,0.85"))
+        print("[INFO][PhysicsValidation] friction_ruler_mode=True, roads disabled, "
+              f"mu_values={cfg.friction_ruler_mu_values}", flush=True)
+    elif cfg.test_mode == "traction_probe":
+        # Deliberately changes NOTHING about the environment except disabling
+        # termination. The point is to observe the ordinary training spawn path
+        # exactly as training sees it: roads on, real scene pool, real
+        # multi-agent spawn, real ground and friction. invincible=True only
+        # stops a tipped or drifted car being teleported back to spawn
+        # mid-probe, which would corrupt the displacement measurement.
+        cfg.invincible = True
+        print("[INFO][TractionProbe] env UNCHANGED except invincible=True. "
+              f"ground_cuboid_size_m={getattr(cfg, 'ground_cuboid_size_m', None)}, "
+              f"ground_contact_offset_m={getattr(cfg, 'ground_contact_offset_m', None)}",
+              flush=True)
     elif cfg.test_mode == "friction_ruler":
         cfg.use_scene_factory_roads = False
         cfg.friction_ruler_mode = True
@@ -2662,6 +2684,24 @@ def main():
         finally:
             base_env.close()
             print(f"[INFO] Bicycle sinwave demo finished in {time.time() - start_time:.2f}s")
+        return
+
+    if str(args_cli.test_mode).strip().lower() == "physics_validation":
+        from src.physics_validation import run_physics_validation
+        try:
+            run_physics_validation(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Physics validation finished in {time.time() - start_time:.2f}s")
+        return
+
+    if str(args_cli.test_mode).strip().lower() == "traction_probe":
+        from src.traction_probe import run_traction_probe
+        try:
+            run_traction_probe(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Traction probe finished in {time.time() - start_time:.2f}s")
         return
 
     if str(args_cli.shared_policy_mode).strip().lower() == "agent_slots":

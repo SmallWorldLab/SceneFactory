@@ -509,6 +509,14 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
 
     spawn_height_m: float = 1.6
     ground_mode: str = "plane"
+    # Side length (m) of the kinematic ground cuboid used when ground_mode
+    # is "cuboid" (default 1000 = +/-500 m). Enlarge for high-speed braking
+    # tests that need a longer runway.
+    ground_cuboid_size_m: float = 1000.0
+    # PhysX contact_offset on the ground cuboid. The PhysX auto-default
+    # (~0.02 m) lets wheels of agents after agent 0 tunnel past the contact
+    # band on the spawn drop; see _spawn_local_ground_plane.
+    ground_contact_offset_m: float = 0.10
     use_scene_factory_roads: bool = False
     scene_factory_config_path: str = "configs/scene_factory/multiworld_scene.yaml"
     scene_factory_world_index: int = 0
@@ -1105,7 +1113,13 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 config=self._tunable_config,
             )
 
-        _spawn_ground("/World/ground", _dry_ground_material_cfg(self._tunable_config), mode=self.cfg.ground_mode)
+        _spawn_ground(
+            "/World/ground",
+            _dry_ground_material_cfg(self._tunable_config),
+            mode=self.cfg.ground_mode,
+            size_m=float(getattr(self.cfg, "ground_cuboid_size_m", 1000.0)),
+            contact_offset=float(getattr(self.cfg, "ground_contact_offset_m", 0.10)),
+        )
         if self.cfg.use_scene_factory_roads and str(self.cfg.ground_mode).strip().lower() == "plane":
             _hide_ground_visuals("/World/ground")
 
