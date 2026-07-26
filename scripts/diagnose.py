@@ -47,6 +47,16 @@ def record(name: str, status: str, detail: str = "") -> None:
     print(f"{_MARK[status]} {name}" + (f" - {detail}" if detail else ""), flush=True)
 
 
+LOG_DIR = REPO_ROOT / "artifacts" / "diagnose" / "logs"
+
+
+def _save_log(name: str, text: str) -> Path:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    path = LOG_DIR / f"{name}.log"
+    path.write_text(text)
+    return path
+
+
 def _run(cmd: list[str], timeout: float, env: dict | None = None) -> tuple[int, str]:
     try:
         r = subprocess.run(
@@ -82,8 +92,13 @@ def check_install() -> None:
 
 
 def check_friction_tests() -> None:
+    # Disable pytest's third-party plugin autoload. Isaac Sim's dependency tree
+    # can register plugins whose own imports fail (e.g. a Flask plugin pulling
+    # 'blinker'), which aborts collection and looks like our tests failing.
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
     rc, out = _run([sys.executable, "-m", "pytest",
-                    "src/trfc/tests/test_friction_water_film.py", "-q"], timeout=300)
+                    "src/trfc/tests/test_friction_water_film.py", "-q", "-p", "no:cacheprovider"],
+                   timeout=300, env=env)
     tail = [l for l in out.strip().splitlines() if l.strip()][-1:] or [""]
     record("friction-tests", PASS if rc == 0 else FAIL, tail[0][:90])
 
@@ -182,9 +197,10 @@ def check_traction_probe(args: argparse.Namespace) -> None:
         "--experiment_name", "diagnose", "--run_name", "traction_probe",
     ]
     rc, out = _run(cmd, timeout=args.gpu_timeout, env=env)
+    log = _save_log("traction_probe", out)
     if rc != 0:
         tail = [l for l in out.strip().splitlines() if l.strip()][-1:] or [""]
-        record("traction-probe", FAIL, f"rc={rc}: {tail[0][:120]}")
+        record("traction-probe", FAIL, f"rc={rc}: {tail[0][:120]} (full log: {log})")
         return
 
     report = sorted(out_dir.rglob("traction_probe.json"))
@@ -196,8 +212,24 @@ def check_traction_probe(args: argparse.Namespace) -> None:
     except Exception as exc:  # noqa: BLE001
         record("traction-probe", FAIL, f"unreadable report: {exc}")
         return
-    record("traction-probe", PASS, f"report at {report[-1].relative_to(REPO_ROOT)} - "
-           "inspect per-agent displacement; every agent should move")
+
+    # Assert, do not merely report. The historical defect is agent-index
+    # dependent: agent 0 drives and agents 1..k sit with wheels spinning, so a
+    # fleet mean can look healthy while most agents are stuck.
+    per_agent = data.get("per_agent_mean_speed") or []
+    stalled = [i for i, v in enumerate(per_agent) if float(v) < args.min_speed_mps]
+    idle0 = data.get("idle_fraction_agent0")
+    idle_rest = data.get("idle_fraction_agents_1plus")
+    if not per_agent:
+        record("traction-probe", FAIL, "report has no per_agent_mean_speed")
+    elif stalled:
+        record("traction-probe", FAIL,
+               f"agents {stalled} below {args.min_speed_mps} m/s "
+               f"(idle agent0={idle0}, agents1+={idle_rest}) - {data.get('verdict', '')}")
+    else:
+        speeds = ", ".join(f"{float(v):.2f}" for v in per_agent)
+        record("traction-probe", PASS,
+               f"all {len(per_agent)} agents moving ({speeds} m/s); {data.get('verdict', '')}")
 
 
 def check_physics_validation(args: argparse.Namespace) -> None:
@@ -213,12 +245,16 @@ def check_physics_validation(args: argparse.Namespace) -> None:
         "--experiment_name", "diagnose", "--run_name", "physics_validation",
     ]
     rc, out = _run(cmd, timeout=args.gpu_timeout, env=env)
+    log = _save_log("physics_validation", out)
     report = sorted(out_dir.rglob("physics_validation_report.json"))
     if rc == 0 and report:
         record("physics-validation", PASS, f"report at {report[-1].relative_to(REPO_ROOT)}")
     else:
-        tail = [l for l in out.strip().splitlines() if l.strip()][-1:] or [""]
-        record("physics-validation", FAIL, f"rc={rc}: {tail[0][:120]}")
+        # Surface the traceback, not just the last line -- the last line of an
+        # Isaac Sim shutdown is rarely the actual error.
+        tb = [l for l in out.splitlines() if "Error" in l or "error:" in l][-1:] or \
+             ([l for l in out.strip().splitlines() if l.strip()][-1:] or [""])
+        record("physics-validation", FAIL, f"rc={rc}: {tb[0][:130]} (full log: {log})")
 
 
 # --------------------------------------------------------------------------- #
@@ -234,6 +270,8 @@ def main() -> int:
     p.add_argument("--probe-agents", type=int, default=4,
                    help="must be >1: the tunnelling defect never appears with a single agent")
     p.add_argument("--gpu-timeout", type=float, default=1800.0)
+    p.add_argument("--min-speed-mps", type=float, default=0.5,
+                   help="per-agent mean speed below which an agent counts as stalled")
     p.add_argument("--skip-physics-validation", action="store_true")
     args = p.parse_args()
 
