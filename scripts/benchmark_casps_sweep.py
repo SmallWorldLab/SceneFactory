@@ -33,6 +33,7 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -177,6 +178,14 @@ def read_casps_from_tensorboard(
     return best_casps, best_steps, spawned
 
 
+_ITER_RE = re.compile(r"Learning iteration\s+(\d+)\s*/\s*(\d+)")
+
+
+def iterations_completed(stdout: str) -> int:
+    """How many PPO iterations rsl_rl actually announced."""
+    return len(_ITER_RE.findall(stdout))
+
+
 def classify_failure(stdout: str, stderr: str, returncode: int) -> tuple[str, str]:
     blob = f"{stdout}\n{stderr}"
     low = blob.lower()
@@ -268,6 +277,7 @@ def run_trial(
     env["PYTHONPATH"] = str(REPO_ROOT)
 
     started = time.time()
+    trial_timeout = args.timeout + args.timeout_per_env * num_envs
     peak_vram = 0
     # Isaac Sim emits far more than a pipe buffer holds during startup. Capturing
     # to subprocess.PIPE without draining it deadlocks the child on write, so the
@@ -294,7 +304,7 @@ def run_trial(
                         f"  | {_tail_line(out_path)}",
                         flush=True,
                     )
-                if now - started > args.timeout:
+                if now - started > trial_timeout:
                     proc.kill()
                     proc.wait(timeout=60)
                     return Trial(
@@ -302,7 +312,7 @@ def run_trial(
                         requested_agents=agents_per_env * num_envs,
                         peak_vram_mib=peak_vram or None,
                         wall_s=time.time() - started,
-                        detail=f"exceeded --timeout {args.timeout}s; see {out_path}",
+                        detail=f"exceeded timeout {trial_timeout:.0f}s; see {out_path}",
                     )
                 time.sleep(2.0)
             rc = proc.returncode
@@ -325,12 +335,30 @@ def run_trial(
         )
 
     casps, steps_s, spawned = read_casps_from_tensorboard(log_dir, warmup_iters=warmup_iters)
+    iters = iterations_completed(stdout)
+
+    # Exit code 0 is NOT sufficient. Isaac Sim can fail during setup and still
+    # exit cleanly, which previously produced a passing trial that had never
+    # trained -- inflating the ceiling and burning ~30 min per doomed trial.
+    # A pass must show the requested iterations AND a CASPS scalar.
+    if iters < iterations or casps is None:
+        return Trial(
+            agents_per_env, num_envs, "incomplete",
+            casps=casps, env_steps_per_s=steps_s, spawned_agents=spawned,
+            requested_agents=agents_per_env * num_envs,
+            peak_vram_mib=peak_vram or None, wall_s=wall,
+            detail=(
+                f"exit 0 but only {iters}/{iterations} iterations announced"
+                + ("" if casps is not None else " and no Perf/CASPS scalar")
+                + f"; see {out_path.name}"
+            ),
+        )
+
     return Trial(
         agents_per_env, num_envs, "ok",
         casps=casps, env_steps_per_s=steps_s, spawned_agents=spawned,
         requested_agents=agents_per_env * num_envs,
         peak_vram_mib=peak_vram or None, wall_s=wall,
-        detail="" if casps is not None else "ran, but no Perf/CASPS scalar found",
     )
 
 
@@ -353,6 +381,37 @@ def _simulated_trial(agents_per_env: int, num_envs: int, args: argparse.Namespac
 
 
 # --------------------------------------------------------------------------- #
+# memory model
+# --------------------------------------------------------------------------- #
+
+def fit_vram_model(samples: list[tuple[int, int]]) -> tuple[float, float] | None:
+    """Least-squares fit of peak VRAM (MiB) against num_envs.
+
+    Measured VRAM is strikingly linear in world count -- on a 4090 at 1
+    agent/world the observed slope was 5.24 MiB/env with a 3.1 GB intercept
+    across 256..2048 worlds. That makes the ceiling predictable from a couple of
+    small, cheap trials instead of found by doubling into 30-minute failures.
+    """
+    pts = [(n, v) for n, v in samples if n > 0 and v and v > 0]
+    if len(pts) < 2:
+        return None
+    n_mean = sum(n for n, _ in pts) / len(pts)
+    v_mean = sum(v for _, v in pts) / len(pts)
+    denom = sum((n - n_mean) ** 2 for n, _ in pts)
+    if denom <= 0:
+        return None
+    slope = sum((n - n_mean) * (v - v_mean) for n, v in pts) / denom
+    if slope <= 0:
+        return None
+    return slope, v_mean - slope * n_mean
+
+
+def predict_max_envs(model: tuple[float, float], budget_mib: float) -> int:
+    slope, intercept = model
+    return max(1, int((budget_mib - intercept) / slope))
+
+
+# --------------------------------------------------------------------------- #
 # search
 # --------------------------------------------------------------------------- #
 
@@ -363,6 +422,7 @@ def sweep_agent_level(
     args: argparse.Namespace,
     workdir: Path,
     trials: list[Trial],
+    budget_mib: float = 0.0,
 ) -> int | None:
     """Coarse seeded search for the largest num_envs that runs.
 
@@ -386,16 +446,40 @@ def sweep_agent_level(
 
     good: int | None = None
     bad: int | None = None
+    samples: list[tuple[int, int]] = []
+
+    def note(tr: Trial) -> None:
+        if tr.verdict == "ok" and tr.peak_vram_mib:
+            samples.append((tr.num_envs, tr.peak_vram_mib))
 
     n = max(args.min_envs, min(args.max_envs, seed_envs))
     t = attempt(n)
+    note(t)
     if t.verdict == "ok":
         good = n
         while good is not None and good < args.max_envs:
+            # Prefer a model-predicted jump over blind doubling: build time is
+            # linear in world count (~0.23 s/world measured), so overshooting is
+            # the most expensive mistake available.
+            model = fit_vram_model(samples)
             nxt = min(good * 2, args.max_envs)
-            if nxt == good:
+            if model and budget_mib > 0:
+                pred = predict_max_envs(model, budget_mib)
+                if pred <= good:
+                    # Model says we are already at the ceiling; probe just above
+                    # to confirm rather than doubling.
+                    nxt = min(int(good * 1.15) + 1, args.max_envs)
+                else:
+                    nxt = min(max(pred, good + 1), good * 2, args.max_envs)
+                print(
+                    f"      [model] {model[1]:.0f} + {model[0]:.2f}/env  ->  "
+                    f"predicted ceiling {pred} envs; probing {nxt}",
+                    flush=True,
+                )
+            if nxt <= good:
                 break
             t = attempt(nxt)
+            note(t)
             if t.verdict == "ok":
                 good = nxt
             else:
@@ -406,6 +490,7 @@ def sweep_agent_level(
         while bad is not None and bad > args.min_envs:
             nxt = max(bad // 2, args.min_envs)
             t = attempt(nxt)
+            note(t)
             if t.verdict == "ok":
                 good = nxt
                 break
@@ -419,6 +504,7 @@ def sweep_agent_level(
         if mid in (good, bad):
             break
         t = attempt(mid)
+        note(t)
         if t.verdict == "ok":
             good = mid
         else:
@@ -538,6 +624,12 @@ def main() -> int:
                    help="leading iterations discarded from the confirmation run; the first "
                         "absorbs CUDA context creation, kernel autotune and Fabric settling")
     p.add_argument("--timeout", type=float, default=1800.0, help="per-trial seconds")
+    p.add_argument("--vram-fraction", type=float, default=0.95,
+                   help="fraction of total VRAM the model may predict into")
+    p.add_argument("--timeout-per-env", type=float, default=0.6,
+                   help="added to --timeout per world. World build is linear in world "
+                        "count (~0.23 s/world measured on a 4090), so a fixed timeout "
+                        "makes every large trial a false 'timeout'.")
     p.add_argument("--heartbeat", type=float, default=30.0,
                    help="seconds between progress lines while a trial runs (0 disables). "
                         "A trial is an Isaac Sim boot plus a world build and can take many "
@@ -585,6 +677,11 @@ def main() -> int:
     print("\nObservation settings are fixed for this sweep; results are only "
           "comparable across sweeps with the same 'observation' block above.\n")
 
+    budget_mib = (total * args.vram_fraction) if total > 0 else 0.0
+    if budget_mib:
+        print(f"VRAM budget for ceiling prediction: {budget_mib:.0f} MiB "
+              f"({args.vram_fraction:.0%} of {total} MiB)\n")
+
     workdir = Path(tempfile.mkdtemp(prefix="casps_sweep_"))
     trials: list[Trial] = []
     ceilings: dict[int, int | None] = {}
@@ -593,7 +690,8 @@ def main() -> int:
         seed = args.seed_envs
         for a in levels:
             print(f"  agents/world = {a}  (seed {seed})", flush=True)
-            ceiling = sweep_agent_level(a, seed_envs=seed, args=args, workdir=workdir, trials=trials)
+            ceiling = sweep_agent_level(a, seed_envs=seed, args=args, workdir=workdir,
+                                        trials=trials, budget_mib=budget_mib)
             ceilings[a] = ceiling
             print(f"  -> ceiling for {a} agents/world: {ceiling}", flush=True)
 
