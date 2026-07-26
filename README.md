@@ -411,6 +411,7 @@ SceneFactory/
 | `ModuleNotFoundError: stable_baselines3` on any eval script | `pip install -r requirements.txt`. |
 | `ModuleNotFoundError: isaaclab` / `isaaclab_rl` | IsaacLab is not a sibling of this repo, or §3 was skipped. Run `check_install.py`. |
 | CUDA OOM at startup | Lower `--num_envs`, `--num_agents_per_env`, and `observation.road_points_k`. |
+| `pip` prints conflicts for `starlette` / `typing_extensions` after step 3 | Expected. Isaac Sim's `fastapi` pin and Isaac Lab's `starlette` pin disagree upstream; the conflict appears whichever order you install in. We did not observe it preventing installation, and have not traced it further. Install Isaac Sim **before** Isaac Lab (§2 then §3) so Isaac Lab's newer pins win. |
 | Isaac Sim fails to start with a driver error | Check your driver against the [Isaac Sim 5.1.0 requirements](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/requirements.html). We verified on 580.173. |
 
 ---

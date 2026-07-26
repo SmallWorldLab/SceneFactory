@@ -17,6 +17,11 @@
 #     pip install -r requirements.txt
 #
 # Versions below are the ones verified end-to-end on Python 3.11 / Linux.
+#
+# Known upstream conflict: pip reports that Isaac Sim's fastapi pin and Isaac
+# Lab's starlette pin disagree (and likewise typing_extensions). This is not
+# caused by this file and appears regardless of install order. It did not block
+# installation in our runs.
 # ---------------------------------------------------------------------------
 
 # --- Deep learning / RL -----------------------------------------------------
