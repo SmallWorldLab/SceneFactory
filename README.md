@@ -149,10 +149,13 @@ SceneFactory against it.
 
 ```bash
 cd ~/your-workspace
-git clone https://github.com/SmallWorldLab/SceneFactory.git
+git clone -b fix/install-reproducibility https://github.com/SmallWorldLab/SceneFactory.git
 cd SceneFactory
 pip install -r requirements.txt
 ```
+
+> The `-b fix/install-reproducibility` is temporary: these install fixes are on a
+> branch pending review. Once it is merged into `main`, drop the flag.
 
 `requirements.txt` covers only the plain-PyPI dependencies — Isaac Sim and Isaac
 Lab are installed in §2 and §3 and deliberately are not listed there.
