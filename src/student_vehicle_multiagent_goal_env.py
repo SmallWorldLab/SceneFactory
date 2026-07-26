@@ -1127,7 +1127,14 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         if self.cfg.use_scene_factory_roads:
             print("[INFO] Building SceneFactory roads independently inside each env after cloning.")
             self._build_scene_factory_worlds(stage)
-            self._initialize_lane_touch_metadata(stage)
+        # Called unconditionally: the lane-touch tensors are allocated on CPU in
+        # __init__ (self.device is not known yet there), and this method's
+        # roads-disabled branch is what moves them onto the sim device. Guarding
+        # the call behind use_scene_factory_roads left them on CPU for any
+        # roads-off run, so the first observation or reward op that mixed them
+        # with a device tensor raised "Expected all tensors to be on the same
+        # device". That affects every roads-off mode, including friction_ruler.
+        self._initialize_lane_touch_metadata(stage)
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=["/World/ground"])
         for agent_id, vehicle in spawned_vehicles.items():
