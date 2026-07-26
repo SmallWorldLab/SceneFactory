@@ -12,9 +12,9 @@ env:
   num_envs: 2
   num_agents_per_env: 2
   observation_mode: "goal_reaching"
-  env_spacing: 120.0
+  env_spacing: 1300.0
   spawn_height_m: 1.6
-  ground_mode: "plane"
+  ground_mode: "cuboid"
   start_radius_m: 0.0
   agent_spawn_circle_radius_m: 10.0
   agent_spawn_jitter_m: 0.10

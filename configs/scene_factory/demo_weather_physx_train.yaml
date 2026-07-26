@@ -31,10 +31,13 @@ env:
   num_envs: 32                   # 32 parallel worlds (vs 256 in paper)
   num_agents_per_env: 4          # 4 agents per world (vs 16 in paper)
   observation_mode: "choco_reference"
-  env_spacing: 400.0
+  env_spacing: 1300.0
   spawn_height_m: 1.2
   spawn_yaw_noise_rad: 0.0
-  ground_mode: "plane"
+  # Each world gets its own 1000 m kinematic ground cuboid, cloned from env_0.
+  # env_spacing must EXCEED ground_cuboid_size_m (default 1000 m): below it,
+  # neighbouring worlds' slabs overlap and a vehicle rests on several at once.
+  ground_mode: "cuboid"
   use_scene_factory_roads: true
   reset_mode: "teleport_only"
   start_radius_m: 0.0

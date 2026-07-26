@@ -13,9 +13,9 @@ env:
   num_envs: 16
   num_agents_per_env: 2
   observation_mode: "goal_reaching"
-  env_spacing: 240.0
+  env_spacing: 1300.0
   spawn_height_m: 1.2
-  ground_mode: "plane"
+  ground_mode: "cuboid"
   use_scene_factory_roads: true
   start_radius_m: 0.0
   agent_spawn_circle_radius_m: 0.0

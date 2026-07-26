@@ -13,10 +13,10 @@ env:
   num_envs: 256
   num_agents_per_env: 16
   observation_mode: "choco_reference"
-  env_spacing: 400.0
+  env_spacing: 1300.0
   spawn_height_m: 1.2
   spawn_yaw_noise_rad: 0.0
-  ground_mode: "plane"
+  ground_mode: "cuboid"
   use_scene_factory_roads: true
   reset_mode: "teleport_only"
   start_radius_m: 0.0

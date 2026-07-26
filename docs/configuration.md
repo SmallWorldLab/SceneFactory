@@ -51,7 +51,7 @@ Full list: `python src/train_student_vehicle_goal_multiagent_rsl_rl.py --help`.
 | `env_spacing` | 400.0 | Metres between world origins on the stage grid. Must exceed the scene extent or worlds overlap visually. |
 | `spawn_height_m` | 1.2 | Height agents are dropped from at reset. |
 | `spawn_yaw_noise_rad` | 0.0 | Uniform yaw jitter at spawn. |
-| `ground_mode` | `plane` | `plane` = one shared infinite ground; `cuboid` = a per-world 1000×1000×1 m kinematic box. Per-world friction works under either — see the note below. |
+| `ground_mode` | `cuboid` | Each world gets its own 1000×1000×1 m kinematic ground cuboid, cloned from env 0. `plane` (a single shared infinite ground) is no longer supported and falls back to `cuboid` with a warning. |
 | `use_scene_factory_roads` | true | Build road geometry from the scene pool. False gives an empty plane. |
 | `reset_mode` | `teleport_only` | Reset strategy. |
 | `start_radius_m` | 0.0 | Radius of the ring agents start on around the scene origin. |

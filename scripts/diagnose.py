@@ -371,10 +371,10 @@ def main() -> int:
     p.add_argument("--gpu-timeout", type=float, default=1800.0)
     p.add_argument("--min-speed-mps", type=float, default=0.5,
                    help="per-agent mean speed below which an agent counts as stalled")
-    p.add_argument("--ground-mode", choices=("cuboid", "plane", "config"), default="cuboid",
-                   help="ground for the traction probe. Default 'cuboid' because the "
-                        "contact_offset fix only applies there; 'plane' cannot exercise it. "
-                        "'config' leaves the config's own setting alone.")
+    p.add_argument("--ground-mode", choices=("cuboid", "config"), default="config",
+                   help="ground for the traction probe. The env now always uses a per-world "
+                        "cuboid; 'config' leaves the config's settings alone, which is what "
+                        "you want so the probe measures what training actually runs.")
     p.add_argument("--ground-cuboid-size-m", type=float, default=1000.0)
     p.add_argument("--env-spacing-m", type=float, default=None,
                    help="world spacing. Left at the config's value by default. NOTE: the "

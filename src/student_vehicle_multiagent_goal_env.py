@@ -508,7 +508,7 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     tunable_config_json: str = _default_tunable_config_json()
 
     spawn_height_m: float = 1.6
-    ground_mode: str = "plane"
+    ground_mode: str = "cuboid"
     # Side length (m) of the kinematic ground cuboid used when ground_mode
     # is "cuboid" (default 1000 = +/-500 m). Enlarge for high-speed braking
     # tests that need a longer runway.
@@ -1113,15 +1113,42 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 config=self._tunable_config,
             )
 
+        # Spawn the ground inside env_0's subtree so Isaac Lab's cloner replicates
+        # it into every env independently. A single shared ground -- infinite
+        # GroundPlane or one global cuboid -- is incompatible with per-world
+        # physics: the cuboid covers only +/-size/2 about the origin, so any world
+        # laid out beyond that has no ground at all and its vehicles free-fall.
+        # A finite cuboid per env is the correct Isaac Lab pattern.
+        if str(self.cfg.ground_mode).strip().lower() != "cuboid":
+            print(
+                f"[WARN][SceneFactory] ground_mode={self.cfg.ground_mode!r} is no longer "
+                "supported; using a per-world cuboid. The shared GroundPlane gave every "
+                "world the same ground and could not be isolated per world.",
+                flush=True,
+            )
+        _per_env_ground_path = self.scene.env_prim_paths[0] + "/Ground"
         _spawn_ground(
-            "/World/ground",
+            _per_env_ground_path,
             _dry_ground_material_cfg(self._tunable_config),
-            mode=self.cfg.ground_mode,
+            mode="cuboid",
             size_m=float(getattr(self.cfg, "ground_cuboid_size_m", 1000.0)),
             contact_offset=float(getattr(self.cfg, "ground_contact_offset_m", 0.10)),
         )
-        if self.cfg.use_scene_factory_roads and str(self.cfg.ground_mode).strip().lower() == "plane":
-            _hide_ground_visuals("/World/ground")
+        if self.cfg.use_scene_factory_roads:
+            # Hide the cuboid visual before cloning so every clone inherits the
+            # invisible state; the SceneFactory road surface renders on top.
+            _hide_ground_visuals(_per_env_ground_path)
+
+        _spacing = float(getattr(self.cfg.scene, "env_spacing", 0.0) or 0.0)
+        _cuboid = float(getattr(self.cfg, "ground_cuboid_size_m", 1000.0))
+        if _spacing < _cuboid:
+            print(
+                f"[WARN][SceneFactory] env_spacing={_spacing:.0f} m is smaller than the "
+                f"ground cuboid ({_cuboid:.0f} m), so neighbouring worlds' slabs overlap "
+                "and a vehicle can rest on several at once. Set env_spacing above "
+                "ground_cuboid_size_m.",
+                flush=True,
+            )
 
         self.scene.clone_environments(copy_from_source=False)
         if self.cfg.use_scene_factory_roads:
@@ -1136,7 +1163,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         # device". That affects every roads-off mode, including friction_ruler.
         self._initialize_lane_touch_metadata(stage)
         if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+            # Ground is per-env now, inside each env's own subtree, so it is
+            # already covered by the env collision groups. No global path.
+            self.scene.filter_collisions(global_prim_paths=[])
         for agent_id, vehicle in spawned_vehicles.items():
             # Register scene entities after cloning to match Isaac Lab's direct MARL task setup.
             self.scene.articulations[agent_id] = vehicle
