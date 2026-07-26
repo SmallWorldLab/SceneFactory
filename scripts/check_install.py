@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata as md
 import importlib.util as iu
+import os
 import sys
 from pathlib import Path
 
@@ -178,6 +179,85 @@ def check_friction_model() -> None:
         record(FAIL, "friction model", f"mu(dry)={mu_dry:.3f}, mu(1mm)={mu_wet:.3f}")
 
 
+# Isaac Sim's libcarb.so requires this symbol version.
+_REQUIRED_GLIBCXX = b"GLIBCXX_3.4.30"
+
+
+def _provides_required_glibcxx(path: Path) -> bool:
+    try:
+        return _REQUIRED_GLIBCXX in path.read_bytes()
+    except OSError:
+        return False
+
+
+def check_libstdcxx() -> None:
+    """Isaac Sim binds the FIRST libstdc++.so.6 on the loader path.
+
+    A stale directory on LD_LIBRARY_PATH — very commonly some other Anaconda
+    install — shadows the environment's own copy and Isaac Sim dies with
+    'Unable to bootstrap inner kit kernel: ... GLIBCXX_3.4.30 not found',
+    long after this checker would otherwise have said everything is fine.
+    """
+    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    search: list[Path] = [Path(d) for d in ld_path.split(":") if d.strip()]
+
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    env_lib = Path(conda_prefix) / "lib" if conda_prefix else None
+    if env_lib:
+        search.append(env_lib)
+    search.append(Path("/usr/lib/x86_64-linux-gnu"))
+
+    winner: Path | None = None
+    for d in search:
+        candidate = d / "libstdc++.so.6"
+        if candidate.exists():
+            winner = candidate
+            break
+
+    if winner is None:
+        record(WARN, "libstdc++", "no libstdc++.so.6 found on the loader path")
+        return
+
+    resolved = winner.resolve()
+    if _provides_required_glibcxx(resolved):
+        record(OK, "libstdc++", f"{resolved.name} provides GLIBCXX_3.4.30 ({winner.parent})")
+        return
+
+    hint = (
+        f"{winner} (-> {resolved.name}) does NOT provide GLIBCXX_3.4.30, and it "
+        "shadows every later entry. Isaac Sim will fail with 'Unable to bootstrap "
+        "inner kit kernel'."
+    )
+    if env_lib and winner.parent != env_lib:
+        hint += (
+            f" Fix: drop that directory from LD_LIBRARY_PATH, or put your env first: "
+            f'export LD_LIBRARY_PATH="{env_lib}:$LD_LIBRARY_PATH"'
+        )
+    else:
+        hint += " Fix: conda install -c conda-forge 'libstdcxx-ng>=12'"
+    record(FAIL, "libstdc++", hint)
+
+
+def check_foreign_ld_library_path() -> None:
+    """Flag loader-path entries belonging to a different user's home."""
+    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    if not ld_path.strip():
+        return
+    home = Path.home()
+    foreign = [
+        d
+        for d in ld_path.split(":")
+        if d.strip().startswith("/home/") and not Path(d).is_relative_to(home)
+    ]
+    if foreign:
+        record(
+            WARN,
+            "LD_LIBRARY_PATH",
+            "contains another user's directories, which take precedence over your "
+            f"environment: {', '.join(foreign)}",
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -192,6 +272,8 @@ def main() -> int:
     check_python()
     check_packages()
     check_isaaclab_sibling()
+    check_libstdcxx()
+    check_foreign_ld_library_path()
     check_assets()
     check_friction_model()
     check_scene_data(args.config)
