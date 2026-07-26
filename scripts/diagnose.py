@@ -57,6 +57,25 @@ def _save_log(name: str, text: str) -> Path:
     return path
 
 
+def _echo_report(text: str, start_marker: str) -> bool:
+    """Re-print a child's own report block on our stdout.
+
+    The child's output is captured so failures can be classified, which means it
+    never reaches the terminal. Rather than making the reader open a file, echo
+    the report block back out.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if start_marker in line:
+            block = lines[max(0, i - 1):]
+            print()
+            for b in block:
+                print("    " + b)
+            print()
+            return True
+    return False
+
+
 def _run(cmd: list[str], timeout: float, env: dict | None = None) -> tuple[int, str]:
     try:
         r = subprocess.run(
@@ -237,11 +256,9 @@ def check_traction_probe(args: argparse.Namespace) -> None:
             note = f" -- spread {spread:.2f} m/s across agents, check for index dependence"
         straight = data.get("path_straightness")
         traj = f", straightness {straight:.2f}" if isinstance(straight, (int, float)) else ""
+        _echo_report(out, "TRACTION PROBE")
         record("traction-probe", PASS,
                f"all {len(per_agent)} agents moving ({speeds} m/s{traj}){note}")
-        txt = sorted(report[-1].parent.glob("traction_probe.txt"))
-        if txt:
-            print(f"        readable report: {txt[-1].relative_to(REPO_ROOT)}")
 
 
 def check_physics_validation(args: argparse.Namespace) -> None:
@@ -259,16 +276,38 @@ def check_physics_validation(args: argparse.Namespace) -> None:
     rc, out = _run(cmd, timeout=args.gpu_timeout, env=env)
     log = _save_log("physics_validation", out)
     report = sorted(out_dir.rglob("physics_validation_report.json"))
-    if rc == 0 and report:
-        txt = report[-1].with_suffix("").with_name("physics_validation_report.txt")
-        where = txt if txt.exists() else report[-1]
-        record("physics-validation", PASS, f"readable report at {where.relative_to(REPO_ROOT)}")
-    else:
+
+    if rc != 0 or not report:
         # Surface the traceback, not just the last line -- the last line of an
         # Isaac Sim shutdown is rarely the actual error.
         tb = [l for l in out.splitlines() if "Error" in l or "error:" in l][-1:] or \
              ([l for l in out.strip().splitlines() if l.strip()][-1:] or [""])
         record("physics-validation", FAIL, f"rc={rc}: {tb[0][:130]} (full log: {log})")
+        return
+
+    _echo_report(out, "PHYSICS VALIDATION REPORT")
+
+    # A report existing is NOT a pass. Read the verdict the report itself
+    # reached, per phase, and fail if any phase failed.
+    try:
+        data = json.loads(report[-1].read_text())
+    except Exception as exc:  # noqa: BLE001
+        record("physics-validation", FAIL, f"unreadable report: {exc}")
+        return
+    phases = {
+        "longitudinal": data.get("phase1_longitudinal", {}).get("pass"),
+        "lateral": data.get("phase2_lateral", {}).get("pass"),
+        "friction": data.get("phase3_friction", {}).get("pass"),
+    }
+    failed = [k for k, v in phases.items() if v is False]
+    overall = data.get("overall_pass")
+    if overall is True and not failed:
+        record("physics-validation", PASS, "all three phases pass (longitudinal, lateral, friction)")
+    else:
+        detail = f"phases failed: {', '.join(failed) or 'unknown'}"
+        if overall is None:
+            detail += " (report has no overall_pass field)"
+        record("physics-validation", FAIL, f"{detail}; see {log}")
 
 
 # --------------------------------------------------------------------------- #
