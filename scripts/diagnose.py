@@ -294,9 +294,15 @@ def check_physics_validation(args: argparse.Namespace) -> None:
     out_dir = REPO_ROOT / "artifacts" / "diagnose" / "physics_validation"
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT),
            "CUDA_VISIBLE_DEVICES": _gpu_index(args.device)}
+    # Use the purpose-built config, not the demo one: this harness needs 14 envs,
+    # roads disabled, its own friction-ruler mu ladder, and a top-speed setting
+    # high enough that the throttle sweep is not clipped.
+    pv_config = REPO_ROOT / "configs/scene_factory/physics_validation.yaml"
+    if not pv_config.is_file():
+        pv_config = args.config
     cmd = [
         sys.executable, "-u", "src/train_student_vehicle_goal_multiagent_rsl_rl.py",
-        "--config", str(args.config), "--headless",
+        "--config", str(pv_config), "--headless",
         "--test_mode", "physics_validation",
         "--num_envs", "14", "--num_agents_per_env", "1",
         "--log_dir", str(out_dir),
