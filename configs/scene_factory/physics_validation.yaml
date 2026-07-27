@@ -13,10 +13,17 @@ env:
   num_envs: 14
   num_agents_per_env: 1
   observation_mode: "choco_reference"
-  env_spacing: 60.0
+  # Must EXCEED ground_cuboid_size_m (1000 m default) so each world sits on its
+  # own slab. The original 60.0 here predates the slab-overlap analysis: at 60 m
+  # with a 1000 m slab every vehicle rested on ~289 overlapping slabs, whose
+  # redundant contact constraints mask exactly the wheel-tunnelling this harness
+  # is supposed to detect.
+  env_spacing: 1300.0
   spawn_height_m: 1.2
   spawn_yaw_noise_rad: 0.0
   ground_mode: "cuboid"
+  ground_cuboid_size_m: 1000.0
+  ground_contact_offset_m: 0.10
   dynamics_mode: "physx"
   use_scene_factory_roads: false
   episode_length_s: 300.0                # far longer than test duration (~10s)
