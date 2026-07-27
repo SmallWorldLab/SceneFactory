@@ -481,6 +481,11 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
             # is non-zero (sysid v4): all wheels generate contact patches at
             # spawn simultaneously. 2**22=4194304 gives ~25x headroom.
             gpu_max_rigid_patch_count=2**22,
+            # Parked vehicles now sit in per-env lots rather than one global pile,
+            # but the solver still carries every world's parked slots at once.
+            # Dev measured ~10.4M peak contacts at 256 envs x 40 slots; 2**24 =
+            # 16.7M covers it.
+            gpu_max_rigid_contact_count=2**24,
         ),
     )
 
@@ -508,6 +513,16 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     tunable_config_json: str = _default_tunable_config_json()
 
     spawn_height_m: float = 1.6
+    # PhysX suspension spring. The sysid value (1080.8 N/m) is ~87x too soft for
+    # the 1800 kg chassis: holding ~4709 N per corner would need 4.36 m of sag
+    # against +/-0.175 m of joint travel, so every corner rests on its lower
+    # travel stop and normal force arrives as impulsive limit-constraint spikes
+    # rather than a spring force. Overridden here.
+    #   critical damping Cc = 2*sqrt(2e6 * 480) = 61979 Ns/m
+    #   49000 Ns/m is 79% of critical: suppresses the intermediate-throttle
+    #   resonance while staying clear of the instability above ~90% at this dt.
+    physx_suspension_stiffness_n_m: float = 2000000.0
+    physx_suspension_damping_ns_m: float = 49000.0
     ground_mode: str = "cuboid"
     # Side length (m) of the kinematic ground cuboid used when ground_mode
     # is "cuboid" (default 1000 = +/-500 m). Enlarge for high-speed braking
@@ -1020,30 +1035,59 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._default_joint_pos.append(vehicle.data.default_joint_pos.clone())
             self._default_joint_vel.append(vehicle.data.default_joint_vel.clone())
 
+            # These three write ZERO, not the sysid values. write_joint_viscous_
+            # friction_coefficient_to_sim reaches set_dof_friction_properties,
+            # which applies friction proportional to the joint CONSTRAINT FORCE
+            # (Coulomb), not to velocity. The sysid wheel value of 1.647 therefore
+            # became ~2000 Ns/m of effective drag at driving loads and capped the
+            # vehicle near 1.5 m/s. Steering response comes from the sysid PD
+            # effort in _apply_action instead.
             vehicle.write_joint_viscous_friction_coefficient_to_sim(
-                joint_viscous_friction_coeff=torch.full(
-                    (self.num_envs, len(steer_joint_ids)),
-                    float(self._tunable_config.steering_viscous_friction),
-                    device=self.device,
+                joint_viscous_friction_coeff=torch.zeros(
+                    (self.num_envs, len(steer_joint_ids)), device=self.device,
                 ),
                 joint_ids=steer_joint_ids,
             )
             vehicle.write_joint_viscous_friction_coefficient_to_sim(
-                joint_viscous_friction_coeff=torch.full(
-                    (self.num_envs, len(brake_joint_ids)),
-                    float(self._tunable_config.wheel_viscous_friction),
-                    device=self.device,
+                joint_viscous_friction_coeff=torch.zeros(
+                    (self.num_envs, len(brake_joint_ids)), device=self.device,
                 ),
                 joint_ids=brake_joint_ids,
             )
-            vehicle.write_joint_viscous_friction_coefficient_to_sim(
-                joint_viscous_friction_coeff=torch.full(
-                    (self.num_envs, len(suspension_joint_ids)),
-                    float(self._tunable_config.suspension_viscous_friction),
-                    device=self.device,
+            # Suspension: zero BOTH the Coulomb and viscous terms. The 120 term
+            # was a crutch stiffening an under-sprung suspension; with the spring
+            # corrected below it only adds speed-independent drag that masks
+            # friction sensitivity.
+            vehicle.write_joint_friction_coefficient_to_sim(
+                joint_friction_coeff=torch.zeros(
+                    (self.num_envs, len(suspension_joint_ids)), device=self.device,
                 ),
                 joint_ids=suspension_joint_ids,
             )
+            vehicle.write_joint_viscous_friction_coefficient_to_sim(
+                joint_viscous_friction_coeff=torch.zeros(
+                    (self.num_envs, len(suspension_joint_ids)), device=self.device,
+                ),
+                joint_ids=suspension_joint_ids,
+            )
+
+            if suspension_joint_ids:
+                _k = float(self.cfg.physx_suspension_stiffness_n_m)
+                _c = float(self.cfg.physx_suspension_damping_ns_m)
+                # Static equilibrium compression under the 4709 N per-wheel load.
+                _eq = -(4709.0 / _k) if _k > 0.0 else 0.0
+                vehicle.write_joint_stiffness_to_sim(
+                    torch.full((self.num_envs, len(suspension_joint_ids)), _k, device=self.device),
+                    joint_ids=suspension_joint_ids,
+                )
+                vehicle.write_joint_damping_to_sim(
+                    torch.full((self.num_envs, len(suspension_joint_ids)), _c, device=self.device),
+                    joint_ids=suspension_joint_ids,
+                )
+                vehicle.write_joint_position_to_sim(
+                    torch.full((self.num_envs, len(suspension_joint_ids)), _eq, device=self.device),
+                    joint_ids=suspension_joint_ids,
+                )
 
         # --- Apply per-env tire friction from weather/friction pipeline ---
         self._apply_per_env_tire_friction()
@@ -2011,16 +2055,35 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
 
     def _done_vehicle_root_pose(self, agent_idx: int, env_ids: torch.Tensor) -> torch.Tensor:
         root_pose = self._default_root_pose[agent_idx][env_ids].clone()
-        # Park done vehicles in a row just outside the grid boundary
-        if not hasattr(self, "_parking_row_x"):
-            all_origins = self.scene.env_origins  # (num_envs, 3)
-            spacing = float(self.cfg.scene.env_spacing)
-            self._parking_row_x = float(all_origins[:, 0].max().item()) + spacing + 5.0
-            self._parking_row_y_start = float(all_origins[:, 1].min().item())
+        if not hasattr(self, "_parking_local_x0"):
+            # PER-ENV lot, inside that env's OWN ground slab.
+            #
+            # The previous global lot sat at max_env_x + env_spacing + 5. That is
+            # on the ground only while the slabs are wide enough to reach it: at
+            # env_spacing 400 with 1000 m slabs (half-width 500) the lot at +405
+            # landed on the overlapping slab union, so the flaw was invisible. With
+            # non-overlapping worlds (spacing 1300) the lot moves to +1305, which
+            # is 805 m past the slab edge, and every parked vehicle free-falls for
+            # the rest of the run -- unbounded z, float32 breakdown, and a solver
+            # full of runaway bodies.
+            #
+            # Shifting the global lot cannot fix it: its y extent is cell *
+            # num_envs (1536 m at 256 envs), wider than any single slab. Give each
+            # env its own lot inside its own slab instead, with env-local offsets,
+            # which makes parking independent of env_spacing entirely.
+            self._parking_cell_m = 6.0
             self._parking_row_z = 0.5
-        root_pose[:, 0] = self._parking_row_x
-        root_pose[:, 1] = self._parking_row_y_start + 3.0 * float(agent_idx)
-        root_pose[:, 2] = self._parking_row_z
+            half = 0.5 * float(getattr(self.cfg, "ground_cuboid_size_m", 1000.0))
+            road_reach = float(getattr(self.cfg, "max_distance_from_origin_m", 100.0))
+            lot_span = self._parking_cell_m * float(self._num_agents)
+            # Clear of the drivable area, and entirely on the slab.
+            self._parking_local_x0 = min(road_reach + 50.0, max(0.0, half - lot_span - 20.0))
+            self._parking_local_y0 = min(road_reach + 50.0, max(0.0, half - 20.0))
+        # One unique cell per agent slot, inside this env's own slab.
+        origins = self.scene.env_origins[env_ids]
+        root_pose[:, 0] = origins[:, 0] + self._parking_local_x0 + self._parking_cell_m * float(agent_idx)
+        root_pose[:, 1] = origins[:, 1] + self._parking_local_y0
+        root_pose[:, 2] = origins[:, 2] + self._parking_row_z
         return root_pose
 
     def _park_done_vehicle(self, agent_idx: int, env_ids: torch.Tensor) -> None:
@@ -2505,13 +2568,20 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         )
         joint_effort_targets.scatter_(2, steer_idx, steer_effort)
 
-        drive_effort = (
-            self._semantic_actions[:, :, 0:1]
-            * float(self._tunable_config.drive_torque_nm)
-            * float(self._dry_longitudinal_scale)
-        )
-        gathered_drive = torch.gather(joint_effort_targets, 2, drive_idx)
-        joint_effort_targets.scatter_(2, drive_idx, gathered_drive + drive_effort.expand_as(gathered_drive))
+        # Drive is VELOCITY-controlled on all four wheels, not direct torque on the
+        # two front wheels. This articulation has no differential, so equal torque
+        # on the front pair lets the momentarily less-loaded wheel run away in slip
+        # while the other stalls -- cancelling most of the commanded traction and
+        # producing a fixed-sign yaw bias (a non-zero yaw rate at zero steer).
+        # Targeting the same omega on every wheel removes both by construction.
+        # The ImplicitActuatorCfg(damping=50) turns the target into effort:
+        #   effort = 50 * (target_omega - current_omega)
+        _WHEEL_RADIUS_M = 0.35
+        _wheel_target_omega = (
+            self._semantic_actions[:, :, 0]
+            * float(self.cfg.bicycle_max_speed_mps)
+            / _WHEEL_RADIUS_M
+        )  # [num_agents, num_envs] rad/s
 
         brake_joint_vel = torch.gather(joint_vel_all, 2, brake_idx)
         brake_sign_memory = torch.stack(self._brake_sign_memory, dim=0)
@@ -2561,6 +2631,13 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._sync_timing_device()
             target_submit_start = perf_counter()
             vehicle.set_joint_effort_target(self._joint_effort_targets[agent_idx])
+            # All-wheel velocity tracking (see _wheel_target_omega above).
+            _done = self._agent_done_mask[agent_idx]
+            _tgt = _wheel_target_omega[agent_idx].clone()
+            _tgt[_done] = 0.0
+            _flat_brake_ids = self._brake_joint_ids_tensor[agent_idx].tolist()
+            _tgt_expanded = _tgt.unsqueeze(-1).repeat(1, len(_flat_brake_ids))
+            vehicle.set_joint_velocity_target(_tgt_expanded, joint_ids=_flat_brake_ids)
             self._sync_timing_device()
             target_submit_ms += (perf_counter() - target_submit_start) * 1000.0
 
