@@ -38,6 +38,9 @@ env:
   # env_spacing must EXCEED ground_cuboid_size_m (default 1000 m): below it,
   # neighbouring worlds' slabs overlap and a vehicle rests on several at once.
   ground_mode: "cuboid"
+  # 0.30 rather than the 0.10 default: 0.10 was tuned under overlapping
+  # slabs and is insufficient for the isolated slabs these configs now use.
+  ground_contact_offset_m: 0.30
   use_scene_factory_roads: true
   reset_mode: "teleport_only"
   start_radius_m: 0.0

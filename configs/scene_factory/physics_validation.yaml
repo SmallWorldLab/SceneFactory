@@ -23,7 +23,12 @@ env:
   spawn_yaw_noise_rad: 0.0
   ground_mode: "cuboid"
   ground_cuboid_size_m: 1000.0
-  ground_contact_offset_m: 0.10
+  # 0.30, not the 0.10 default. 0.10 was tuned when worlds sat on nine
+  # overlapping slabs, where a wheel tunnelling one still caught another. On an
+  # isolated slab that redundancy is gone. Swept 0.10/0.15/0.20/0.30 at spacing
+  # 1300: z_range fell at three of four throttle levels (0.133->0.062,
+  # 0.103->0.042, 0.302->0.163) and full-throttle peak rose 5.09 -> 5.28 m/s.
+  ground_contact_offset_m: 0.30
   dynamics_mode: "physx"
   use_scene_factory_roads: false
   episode_length_s: 300.0                # far longer than test duration (~10s)

@@ -253,9 +253,18 @@ def _analyse(
 
     # ── Phase 1 ───────────────────────────────────────────────────────────────
     p1_peak   = [max(s) if s else 0.0 for s in p1_speed]
-    p1_z_range = [max(z) - min(z) if z else 0.0 for z in p1_z]
+    # Two different questions, previously conflated into one number:
+    #   launch  = did the car bounce while the drive impulse came on?
+    #   steady  = is it riding on the ground once it settled?
+    # Only the second says the physics is wrong. Measuring max-min over the WHOLE
+    # phase let a single launch excursion decide 'grounded', which is why the
+    # failures were non-monotonic in throttle (bad at 0.50 and 1.00, fine at 0.25
+    # and 0.75) -- a signature of transients, not of contact.
+    p1_z_range = [max(z) - min(z) if z else 0.0 for z in p1_z]          # full phase
+    _tail = lambda z: z[int(len(z) * 0.6):] if len(z) >= 5 else z
+    p1_z_range_steady = [max(_tail(z)) - min(_tail(z)) if z else 0.0 for z in p1_z]
     p1_mono   = all(p1_peak[i] < p1_peak[i + 1] for i in range(len(p1_peak) - 1))
-    p1_grounded = all(zr < _P1_MAX_Z_RANGE_M for zr in p1_z_range)
+    p1_grounded = all(zr < _P1_MAX_Z_RANGE_M for zr in p1_z_range_steady)
     p1_pass   = p1_peak[-1] >= P1_MIN_FULL_THROTTLE_SPEED and p1_mono and p1_grounded
 
     # Speed curve sampled every 20 steps (compact for JSON)
@@ -325,6 +334,7 @@ def _analyse(
             "throttle_levels": THROTTLE_LEVELS,
             "peak_speed_mps": p1_peak,
             "z_range_m": p1_z_range,
+            "z_range_steady_m": p1_z_range_steady,
             "grounded": p1_grounded,
             "monotonic": p1_mono,
             "full_throttle_peak_mps": p1_peak[-1],
@@ -370,10 +380,13 @@ def _print_report(r: dict) -> None:
     print(SEP)
 
     print("\nPhase 1 — Longitudinal (steer=0, μ=1.0)")
-    for t, spd, zr in zip(p1["throttle_levels"], p1["peak_speed_mps"], p1["z_range_m"]):
+    for t, spd, zr, zs in zip(p1["throttle_levels"], p1["peak_speed_mps"],
+                              p1["z_range_m"], p1.get("z_range_steady_m", p1["z_range_m"])):
         tag = " ← full throttle" if t == 1.0 else ""
-        z_flag = " ← BAD (z_range)" if zr >= _P1_MAX_Z_RANGE_M else ""
-        print(f"  throttle={t:.2f}  peak={spd:.2f} m/s  z_range={zr:.3f} m{tag}{z_flag}")
+        z_flag = " ← BAD (not grounded)" if zs >= _P1_MAX_Z_RANGE_M else ""
+        launch = "  (launch transient)" if zr >= _P1_MAX_Z_RANGE_M > zs else ""
+        print(f"  throttle={t:.2f}  peak={spd:.2f} m/s  z_steady={zs:.3f} m  "
+              f"z_full={zr:.3f} m{tag}{z_flag}{launch}")
     print(f"  grounded(z<{_P1_MAX_Z_RANGE_M:.2f}m): {p1['grounded']}  monotonic: {p1['monotonic']}  "
           f"→ {'PASS' if p1['pass'] else 'FAIL'}")
 

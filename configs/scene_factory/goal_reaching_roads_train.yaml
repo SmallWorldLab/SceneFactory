@@ -16,6 +16,9 @@ env:
   env_spacing: 1300.0
   spawn_height_m: 1.2
   ground_mode: "cuboid"
+  # 0.30 rather than the 0.10 default: 0.10 was tuned under overlapping
+  # slabs and is insufficient for the isolated slabs these configs now use.
+  ground_contact_offset_m: 0.30
   use_scene_factory_roads: true
   start_radius_m: 0.0
   agent_spawn_circle_radius_m: 0.0

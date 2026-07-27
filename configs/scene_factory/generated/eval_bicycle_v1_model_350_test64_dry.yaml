@@ -29,6 +29,9 @@ env:
   spawn_height_m: 1.2
   spawn_yaw_noise_rad: 0.0
   ground_mode: "cuboid"
+  # 0.30 rather than the 0.10 default: 0.10 was tuned under overlapping
+  # slabs and is insufficient for the isolated slabs these configs now use.
+  ground_contact_offset_m: 0.30
   use_scene_factory_roads: true
   reset_mode: "teleport_only"
   start_radius_m: 0.0
