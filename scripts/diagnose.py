@@ -351,11 +351,22 @@ def check_physics_validation(args: argparse.Namespace) -> None:
         if phases["lateral"] is False:
             bits.append("lateral: turning symmetry or straight-line test failed")
         if phases["friction"] is False:
-            bits.append(
-                f"friction: mu changes top speed by only "
-                f"{100 * p3.get('friction_effect_fraction', 0.0):.1f}% "
-                f"vs {100 * p3.get('threshold_effect', 0.0):.0f}% expected"
-            )
+            # Name the sub-criterion that actually failed. friction_effect is only
+            # one of three, and reporting it unconditionally mislabels a
+            # monotonicity failure as a sensitivity failure -- it read "mu changes
+            # top speed by only 67.0% vs 20% expected" when 67% comfortably CLEARS
+            # the 20% floor and the real failure was non-monotonic peaks.
+            eff = float(p3.get("friction_effect_fraction", 0.0))
+            thr = float(p3.get("threshold_effect", 0.0))
+            reasons = []
+            if p3.get("monotonic_peak") is False:
+                reasons.append("peak speed not monotonic in mu")
+            if p3.get("monotonic_eff_decel") is False:
+                reasons.append("effective deceleration not monotonic in mu")
+            if eff < thr:
+                reasons.append(f"mu changes top speed by only {100 * eff:.1f}% vs {100 * thr:.0f}% required")
+            bits.append("friction: " + "; ".join(reasons or ["unknown sub-criterion"])
+                        + (f" (sensitivity {100 * eff:.1f}% is fine)" if eff >= thr else ""))
         detail = "; ".join(bits) or f"phases failed: {', '.join(failed) or 'unknown'}"
         if overall is None:
             detail += " (report has no overall_pass field)"
