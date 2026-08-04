@@ -6,8 +6,23 @@
 #
 #  Usage:
 #    bash run_visualize_scene.sh                   # default 4 worlds, GUI
-#    bash run_visualize_scene.sh --world_count 1   # single world
+#    bash run_visualize_scene.sh --world_count 64  # 8×8 grid of unique scenes
+#    bash run_visualize_scene.sh --world_count 1 --freeze  # freeze after 10 steps (good for screenshots)
 #    bash run_visualize_scene.sh --save_stage_usd  # GUI + export .usda on exit
+#
+#  Off-screen camera render (no GUI window):
+#    bash run_visualize_scene.sh --headless \
+#      --camera_path artifacts/camera_traj.json \
+#      --capture_dir artifacts/render_out \
+#      --capture_fps 30 --capture_width 1920 --capture_height 1080
+#
+#  Camera trajectory JSON format (artifacts/camera_traj.json):
+#    [
+#      {"t": 0.0,  "eye": [200, 200, 160], "lookat": [0, 0, 0]},
+#      {"t": 5.0,  "eye": [100,  50,  80], "lookat": [0, 0, 0]},
+#      {"t": 10.0, "eye": [  0, 200,  40], "lookat": [0, 0, 0]}
+#    ]
+#    t = time in seconds, eye/lookat in world-space metres.
 # ============================================================
 set -euo pipefail
 

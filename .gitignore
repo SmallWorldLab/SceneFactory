@@ -9,6 +9,38 @@ logs/
 # Data (large files — not redistributable)
 data/waymo_tfrecords/*.tfrecord*
 data/processed/waymo_scenes_json/*.json
+data/processed/waymo_workzone_*/
+# Workzone variety generator outputs (scripts/generate_workzone_variants.py)
+data/processed/workzone_variants*/
+**/variants_manifest.json
+scene_*_v[0-9]*.json
+
+# Generated artifacts and media
+artifacts/
+presentation/
+configs/scene_factory/generated/
+*_scrot.png
+Scene_factory_NeurIPS_v1_for_arxiv.pdf
 
 # Eval output directories (timestamped)
 [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*_eval_*/
+
+# Scratch viz / one-off analysis output (regenerate with scripts/viz_design_vs_score.py)
+design_vs_score.html
+scratch_viz_logs/
+
+# Claude Code local state (agent worktrees, machine-local settings)
+.claude/
+
+# Paper/rebuttal binaries and LaTeX build output (~37 MB of PDFs and submission
+# zips). The markdown and .tex sources under tasks/rebuttal/ ARE tracked — only
+# the compiled and packaged artifacts are not.
+tasks/rebuttal/**/*.pdf
+tasks/rebuttal/**/*.zip
+tasks/rebuttal/**/*.png
+tasks/rebuttal/**/*.aux
+tasks/rebuttal/**/*.log
+tasks/rebuttal/**/*.out
+tasks/rebuttal/**/*.bbl
+tasks/rebuttal/**/*.blg
+tasks/rebuttal/**/*.synctex.gz

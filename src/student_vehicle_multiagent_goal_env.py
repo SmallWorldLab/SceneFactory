@@ -65,6 +65,29 @@ _TTC_NEAR_MISS_THRESHOLD_S: float = 2.0   # TTC < 2 s → near-miss event
 _DRAC_HIGH_THRESHOLD: float = 3.4          # DRAC > 3.4 m/s² → dangerous deceleration demand
 
 
+def _load_scene_factory_lane_touch_ids(stage, *, world_root: str, n_points: int) -> np.ndarray:
+    """Per-sample source polyline id `[n_points]`, or -1 where unavailable.
+
+    Written by `chocolate_waymo_builder` as the `road_point_ids` custom-data
+    key.  Stages built before that key existed return all -1, which every
+    consumer must treat as "lane identity unknown".
+    """
+    prim = stage.GetPrimAtPath(str(world_root))
+    if not prim.IsValid():
+        return np.full((n_points,), -1, dtype=np.int64)
+    try:
+        custom_data = prim.GetCustomData()
+        ids = custom_data.get("road_point_ids", None) if isinstance(custom_data, dict) else None
+        if ids is None:
+            return np.full((n_points,), -1, dtype=np.int64)
+        ids_np = np.asarray(ids, dtype=np.int64).reshape(-1)
+    except Exception:
+        return np.full((n_points,), -1, dtype=np.int64)
+    if ids_np.shape[0] != int(n_points):
+        return np.full((n_points,), -1, dtype=np.int64)
+    return ids_np
+
+
 def _load_scene_factory_lane_touch_metadata(stage, *, world_root: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     from pxr import UsdGeom
 
@@ -155,6 +178,96 @@ def _load_scene_factory_lane_touch_metadata(stage, *, world_root: str) -> tuple[
         half_widths_np = np.zeros((points_np.shape[0],), dtype=np.float32)
 
     return points_xy, dirs_np, half_lengths_np, half_widths_np, types_np.reshape(-1)
+
+
+def _load_workzone_cone_metadata(stage, *, world_root: str) -> tuple[np.ndarray, float]:
+    """Load cone XY positions and speed limit from USD custom data.
+
+    Returns:
+        cone_positions_xy: float32 array of shape (N, 2) in metres (stage-unit scaled).
+        speed_limit_mps: posted speed limit in m/s, or -1.0 if absent.
+    """
+    from pxr import UsdGeom
+
+    _empty = np.zeros((0, 2), dtype=np.float32), -1.0
+
+    prim = stage.GetPrimAtPath(str(world_root))
+    if not prim.IsValid():
+        return _empty
+
+    try:
+        custom_data = prim.GetCustomData()
+    except Exception:
+        custom_data = {}
+    if not isinstance(custom_data, dict):
+        custom_data = {}
+
+    cone_raw = custom_data.get("workzone_cone_positions_xy", None)
+    speed_limit = float(custom_data.get("workzone_speed_limit_mps", -1.0))
+
+    if cone_raw is None:
+        return _empty
+
+    try:
+        cone_np = np.asarray(cone_raw, dtype=np.float32)
+    except Exception:
+        return _empty
+
+    if cone_np.ndim == 1 and cone_np.shape[0] % 2 == 0:
+        cone_np = cone_np.reshape(-1, 2)
+    if cone_np.ndim != 2 or cone_np.shape[1] < 2:
+        return _empty
+
+    mpu = float(UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
+    if not math.isfinite(mpu) or mpu <= 0.0:
+        mpu = 1.0
+    cone_positions_m = cone_np[:, :2] * mpu
+
+    return cone_positions_m, speed_limit
+
+
+def _load_workzone_forbidden_boxes(stage, world_prim_path: str, meters_per_unit: float) -> np.ndarray:
+    """Load workzone forbidden box metadata from USD custom data.
+
+    Returns float32 numpy array of shape (M, 5): (cx, cy, half_len, half_wid, yaw_rad),
+    or empty array of shape (0, 5) if absent.
+    """
+    from pxr import UsdGeom
+
+    _empty = np.zeros((0, 5), dtype=np.float32)
+
+    prim = stage.GetPrimAtPath(str(world_prim_path))
+    if not prim.IsValid():
+        return _empty
+
+    try:
+        custom_data = prim.GetCustomData()
+    except Exception:
+        custom_data = {}
+    if not isinstance(custom_data, dict):
+        custom_data = {}
+
+    boxes_raw = custom_data.get("workzone_forbidden_boxes", None)
+    if boxes_raw is None:
+        return _empty
+
+    try:
+        boxes_np = np.asarray(boxes_raw, dtype=np.float32).reshape(-1)
+    except Exception:
+        return _empty
+
+    if boxes_np.size == 0 or boxes_np.size % 5 != 0:
+        return _empty
+
+    boxes_np = boxes_np.reshape(-1, 5)
+    # Scale position and size fields (cols 0-3) by meters_per_unit; yaw_rad (col 4) is in radians already
+    mpu = float(meters_per_unit)
+    if not math.isfinite(mpu) or mpu <= 0.0:
+        mpu = 1.0
+    result = boxes_np.copy()
+    result[:, :4] *= mpu  # cx, cy, half_len, half_wid
+    # yaw_rad stays unchanged
+    return result
 
 
 def _load_student_vehicle_dimensions_m(usd_path: str | Path) -> tuple[float, float, float]:
@@ -262,6 +375,43 @@ def _build_vehicle_proxy_marker(
     return VisualizationMarkers(marker_cfg)
 
 
+def _build_cone_marker(
+    prim_path: str,
+    *,
+    cone_height_m: float = 0.72,
+    cone_radius_m: float = 0.20,
+    beacon: bool = True,
+) -> VisualizationMarkers:
+    """Build orange traffic-cone markers for runtime (tensor-only) cones.
+
+    Runtime cones dropped by RandomConeDropper live only in GPU tensors (no USD
+    prims), so the JSON-based beacon path in the builder can't see them. This
+    marker instancer is updated each frame from _cone_positions_xy_m so those
+    cones are actually visible on camera. In ``beacon`` mode the cone is scaled
+    up and given an emissive orange material for top-down legibility.
+    """
+    vis_h = cone_height_m * (6.0 if beacon else 1.0)
+    vis_r = cone_radius_m * (2.5 if beacon else 1.0)
+    marker_cfg = CUBOID_MARKER_CFG.copy()
+    marker_cfg.prim_path = str(prim_path)
+    marker_cfg.markers = {
+        "cone": sim_utils.ConeCfg(
+            radius=float(vis_r),
+            height=float(vis_h),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(1.0, 0.45, 0.0),
+                emissive_color=(1.0, 0.35, 0.0),
+            ),
+        ),
+    }
+    return VisualizationMarkers(marker_cfg)
+
+
+_CONE_POINT_TYPE = 10  # integer type label for workzone cones; distinct from lane_center=2, divider=6, road_edge=15
+_WORKZONE_EDGE_TYPE = 21  # boundary edges of forbidden workzone boxes (21 avoids collision with Waymo type 20)
+_CONE_FEAT_DIM = 3    # (x_ego_norm, y_ego_norm, type_norm) per cone slot
+
+
 def _reference_observation_dim(cfg: "StudentVehicleMultiAgentGoalEnvCfg") -> int:
     dim = 7
     if bool(cfg.obs_weather_context_enable):
@@ -273,7 +423,6 @@ def _reference_observation_dim(cfg: "StudentVehicleMultiAgentGoalEnvCfg") -> int
             _reference_vehicle_feat_dim(cfg.obs_neighbor_include_ttc, cfg.obs_neighbor_include_index)
         )
     return int(dim)
-
 
 def _wrap_pi_torch(angle: torch.Tensor) -> torch.Tensor:
     return torch.atan2(torch.sin(angle), torch.cos(angle))
@@ -405,12 +554,16 @@ def resolve_scene_factory_env_assignments(cfg: "StudentVehicleMultiAgentGoalEnvC
             goal_radius_m=float(vehicles_cfg.get("goal_radius_m", cfg.goal_reached_threshold_m)),
             start_goal_thresh_m=vehicles_cfg.get("start_goal_thresh_m"),
         )
-        if len(spawns) <= 0:
+        if len(spawns) <= 0 and not bool(getattr(cfg, "random_od", False)):
             print(
                 f"[WARNING] SceneFactory: {world_spec.scene_json_name} yields no controllable spawns "
                 f"(env_{env_index}) — skipping this scene."
             )
             continue
+        # random_od resamples OD every reset, so a scene with no baked spawns
+        # (e.g. the base workzone scenes, whose agents.items is empty on purpose)
+        # is legitimate: it passes through here with an empty list and is filled
+        # by `_resample_random_od_for_envs` on the first reset.
         min_available = min(min_available, len(spawns))
         per_env_specs.append(world_spec)
         per_env_spawns.append(list(spawns))
@@ -513,30 +666,15 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     tunable_config_json: str = _default_tunable_config_json()
 
     spawn_height_m: float = 1.6
-    # PhysX suspension spring. The sysid value (1080.8 N/m) is ~87x too soft for
-    # the 1800 kg chassis: holding ~4709 N per corner would need 4.36 m of sag
-    # against +/-0.175 m of joint travel, so every corner rests on its lower
-    # travel stop and normal force arrives as impulsive limit-constraint spikes
-    # rather than a spring force. Overridden here.
-    #   critical damping Cc = 2*sqrt(2e6 * 480) = 61979 Ns/m
-    #   49000 Ns/m is 79% of critical: suppresses the intermediate-throttle
-    #   resonance while staying clear of the instability above ~90% at this dt.
-    physx_suspension_stiffness_n_m: float = 2000000.0
-    physx_suspension_damping_ns_m: float = 49000.0
     ground_mode: str = "cuboid"
-    # Side length (m) of the kinematic ground cuboid used when ground_mode
-    # is "cuboid" (default 1000 = +/-500 m). Enlarge for high-speed braking
-    # tests that need a longer runway.
-    ground_cuboid_size_m: float = 1000.0
-    # PhysX contact_offset on the ground cuboid. The PhysX auto-default
-    # (~0.02 m) lets wheels of agents after agent 0 tunnel past the contact
-    # band on the spawn drop; see _spawn_local_ground_plane.
-    ground_contact_offset_m: float = 0.10
+    # NOTE: physx_suspension_*, ground_cuboid_size_m, ground_contact_offset_m and
+    # wheel_friction_cap are declared once, together, in the PhysX section below.
     use_scene_factory_roads: bool = False
     scene_factory_config_path: str = "configs/scene_factory/multiworld_scene.yaml"
     scene_factory_world_index: int = 0
     scene_factory_world_selection_mode: str = "fixed"
     scene_factory_random_world_seed: int = 42
+    repeat_first_scene: bool = False  # force all envs to use env-0's scene (for friction comparison videos)
     reset_mode: str = "isaac_reset"
     start_radius_m: float = 0.5
     agent_spawn_circle_radius_m: float = 3.5
@@ -594,6 +732,22 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     reward_choco_road_edge_ttc_penalty_min_ttc: float = 0.5
     reward_choco_road_edge_ttc_hard_min_ttc: float = 0.5
     reward_choco_road_edge_ttc_radius_m: float = 40.0
+
+    # Workzone cone proximity penalty
+    reward_workzone_cone_penalty_enable: bool = False
+    reward_workzone_cone_penalty_alpha: float = 0.20
+    reward_workzone_cone_safe_dist_m: float = 1.5
+
+    # Workzone cone hard collision (one-time event penalty)
+    reward_workzone_cone_collision_dist_m: float = 0.5    # hard cone collision distance
+    reward_workzone_cone_collision_penalty: float = -6.0  # one-time cone hit penalty
+
+    # Workzone forbidden box entry penalty (per-step inside forbidden box)
+    reward_workzone_box_entry_penalty: float = -5.0
+
+    # Workzone speed limit compliance penalty
+    reward_workzone_speed_penalty_enable: bool = False
+    reward_workzone_speed_penalty_beta: float = 0.15
     obs_weather_context_enable: bool = True
     obs_weather_context_blind: bool = False  # If True, feed all-zeros weather context regardless of actual surface (for OOD eval of dry-trained models)
     obs_road_points_enable: bool = True
@@ -647,6 +801,33 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     bicycle_accel_scale: float = 6.0       # throttle → m/s² gain
     bicycle_steer_limit_rad: float = 0.52  # max front wheel angle (≈30 deg)
 
+    # --- PhysX suspension (multi-agent) --------------------------------------
+    # Overrides the USD/sysid suspension spring at startup.  See the derivation
+    # in `_apply_runtime_student_dynamics`.  Exposed so the values can be swept
+    # without editing code; equilibrium position is derived from the stiffness.
+    #
+    # The sysid value (1080.8 N/m) is ~87x too soft for the 1800 kg chassis:
+    # holding ~4709 N per corner would need 4.36 m of sag against +/-0.175 m of
+    # joint travel, so every corner rests on its lower travel stop and normal
+    # force arrives as impulsive limit-constraint spikes rather than a spring
+    # force.  Critical damping Cc = 2*sqrt(2e6 * 480) = 61979 Ns/m; 49000 Ns/m is
+    # 79% of critical, which suppresses the intermediate-throttle resonance while
+    # staying clear of the instability above ~90% at this dt.
+    physx_suspension_stiffness_n_m: float = 2000000.0
+    physx_suspension_damping_ns_m: float = 49000.0
+
+    # Side length (m) of the per-env kinematic ground cuboid (default 1000 = ±500 m).
+    # Enlarge for high-speed braking tests that need a longer runway.
+    ground_cuboid_size_m: float = 1000.0
+    # PhysX contact_offset on the ground cuboid.  0.10 was tuned with 1000 m
+    # slabs overlapping nine deep; a single non-overlapping slab needs more.
+    ground_contact_offset_m: float = 0.10
+    # Wheel-side friction ceiling.  Contact μ = min(ground_μ, wheel_friction_cap)
+    # because both materials use friction_combine_mode="min".  1.0 reproduces the
+    # value baked into the vehicle USD, so the default is a no-op; raise it to let
+    # ground μ above 1.0 through.  See _apply_uniform_wheel_friction_cap.
+    wheel_friction_cap: float = 1.0
+
     friction_ruler_mode: bool = False
     friction_ruler_mu_values: str = ""  # comma-separated per-env μ, e.g. "1.1,0.6,0.3,0.1"
     friction_ruler_labels: str = ""  # comma-separated per-env labels for video overlay
@@ -656,6 +837,74 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     random_od_min_travel_m: float = 20.0
     random_od_max_travel_m: float = 60.0
     random_od_lane_types: tuple[int, ...] = (1, 2)
+    # "lane": sample any lane-center OD (sample_lane_center_start_goal_pairs).
+    # "workzone": place agents upstream of the scene's forbidden-box closure on
+    # its host lane, goals downstream (sample_workzone_start_goal_pairs).  Used
+    # by the base workzone scenes, whose agents.items is intentionally empty so
+    # the upstream vehicle placement is resampled per reset rather than baked.
+    random_od_mode: str = "lane"
+    random_od_workzone_spawn_spacing_m: float = 8.0
+    random_od_workzone_approach_gap_m: float = 8.0
+    random_od_workzone_goal_clearance_m: float = 15.0
+    # Deterministic traffic: when >= 0, every reset seeds the OD sampler with this
+    # fixed value instead of a fresh RNG draw, so the spawned convoy is identical
+    # across resets (and, for a single-scene pool, across all envs).  Lets the
+    # workzone optimizer compare taper candidates against the SAME traffic so the
+    # reward difference is the taper, not spawn noise.  -1 = random per reset.
+    random_od_fixed_seed: int = -1
+    # Seed for the per-reset OD RNG used when random_od_fixed_seed < 0.  This RNG is
+    # created once at env init and drawn from on every reset, so it fixes the whole
+    # SEQUENCE of per-episode traffic draws: the same value makes an entire run
+    # replicable while each episode still differs, and changing it yields different
+    # but equally-deterministic traffic.  train.py sets this from the command-level
+    # --seed; -1-style hardcoding is gone.
+    random_od_rng_seed: int = 42
+    # Debug: when True, print the per-reset OD seed (env 0 only) so you can eyeball
+    # that traffic is RESAMPLED each episode (seed changes across resets) yet fully
+    # reproducible across runs with the same --seed (identical seed sequence).
+    # train.py auto-enables this under --smoke / --scene_pool.
+    random_od_debug: bool = False
+    # Two-lane traffic (workzone mode): place `open_lane_count` of the agents on
+    # the adjacent open lane (host centerline offset laterally by
+    # open_lane_offset_m), driving straight through, so the closing-lane convoy
+    # must merge into a moving stream instead of empty space.  0 = single lane.
+    random_od_workzone_open_lane_count: int = 0
+    # Open through-lane offset from the host centerline, on the side the closing
+    # cars MERGE INTO (opposite the taper cones).  Sign verified against the sim:
+    # the builder's cones land on +normal, closing cars merge to -normal, so the
+    # open lane sits at negative offset.  (An earlier +3.5 put the open convoy on
+    # the cone side — the "two lanes on different sides of the taper" bug.)
+    random_od_workzone_open_lane_offset_m: float = -3.5
+    random_od_workzone_open_lane_stagger_m: float = 4.0
+    # Closing-lane cars begin on the host lane but must reach the open lane
+    # downstream. None inherits random_od_workzone_open_lane_offset_m.
+    random_od_workzone_merge_goal_lane_offset_m: float | None = None
+    # Multilane merge OD (random_od_mode == "multilane_merge"): fraction of
+    # closed-lane cars that return to the closed lane downstream (1.0 = all
+    # return; < 1.0 routes the remainder's goal onto the nearest open lane).
+    random_od_merge_return_frac: float = 1.0
+    # Downstream clearance (m) for the returning closed-lane goal, measured from
+    # the box exit edge. Fixed & conservative (independent of the taper design):
+    # must exceed the worst-case exit taper (~40 m) + merge-back room (~20 m).
+    random_od_multilane_return_goal_clearance_m: float = 60.0
+    # Density knob (random_od_mode == "multilane_merge"). `capacity` is the fixed
+    # articulation budget — it IS num_agents_per_env, since PhysX articulations are
+    # created at construction and you can never spawn more. `density` in [0,1] sets
+    # how many of them actually spawn each reset:
+    #   N = max(1, ceil(capacity * density)); the other capacity-N slots PARK and
+    # ride the existing _spawned_agent_mask (already denominator-safe). density is a
+    # PER-ENV quantity: a scalar broadcasts to all envs, or a [num_envs]
+    # list/tuple/tensor gives each env its own value (forward-compat with per-env
+    # randomization + 32-distinct-scenes-per-run — a fill change, not a re-plumb).
+    # The N cars' lane assignment is a seeded uniform draw, not a forced even split.
+    random_od_multilane_capacity: int = 20
+    random_od_multilane_density: float | list[float] = 1.0
+    # Optional (lo, hi): when set, each env's density is RESAMPLED every reset from
+    # Uniform(lo, hi), derived from that env's OD seed — so it is reproducible with
+    # --seed and, in fixed-seed mode, stays constant (identical to the fixed knob).
+    # Overrides random_od_multilane_density. Drives the spawn count N=ceil(cap*d);
+    # the encoder's realized-density obs tracks it via _refresh_realized_density.
+    random_od_multilane_density_range: tuple[float, float] | None = None
 
     reward_scale_alive: float = 0.05
     reward_scale_progress: float = 10.0
@@ -679,6 +928,10 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     capture_camera_horizontal_aperture: float = 20.955
     capture_camera_padding_scale: float = 1.35
     capture_camera_height_scale: float = 1.6
+    # When > 0, top-down SceneFactory capture frames a fixed span_m x span_m window
+    # centered on each env origin instead of the whole scene. Zooms in so vehicles
+    # and cones are large enough to read (useful for big Waymo scenes).
+    capture_camera_fixed_span_m: float = 0.0
     capture_camera_view_mode: str = "whole_grid"
     capture_camera_env_index: int = 0
     capture_camera_pose_mode: str = "top_down"  # "top_down" or "traffic_cam"
@@ -714,9 +967,37 @@ class StudentVehicleMultiAgentGoalEnvCfg(DirectMARLEnvCfg):
     capture_camera_drift_start_tilt_deg: float = 25.0  # initial surveillance tilt
     capture_camera_drift_rise_tilt_deg: float = 70.0  # tilt at top of rise
     capture_camera_drift_azimuth_deg: float = 0.0  # initial viewing direction
+    # Chase camera: 3rd-person follow cam locked to one agent
+    capture_camera_chase_agent_index: int = 0
+    capture_camera_chase_env_index: int = 0
+    capture_camera_chase_distance_m: float = 8.0    # how far behind the vehicle
+    capture_camera_chase_height_m: float = 2.5      # camera height above ground
+    capture_camera_chase_look_height_m: float = 0.8 # point camera looks at (car body)
+    capture_camera_chase_smoothing: float = 0.0     # exponential smoothing on eye pos (0=off)
+    # Broadcast camera: cuts between agents on a schedule (chase-style view of each)
+    capture_camera_broadcast_hold_frames: int = 150  # frames per agent before cutting
+    capture_camera_broadcast_agent_indices: str = ""  # comma list of agent indices; empty=all
+    capture_camera_broadcast_env_index: int = 0
+    capture_camera_broadcast_distance_m: float = 8.0
+    capture_camera_broadcast_height_m: float = 2.5
+    capture_camera_broadcast_look_height_m: float = 0.8
+    capture_camera_broadcast_all_worlds: bool = False  # rotate through all envs × all agents
     hide_goal_markers: bool = False  # hide destination beacon visuals (for clean video capture)
+    video_cone_markers: bool = False  # add tall glowing beacon poles above cones for video visibility
     vehicle_proxy_marker_enable: bool = False
     vehicle_proxy_marker_z_offset_m: float = -0.5
+    vehicle_proxy_marker_2d_overlay: bool = True  # draw colored rectangles on frame; set False for 3D-only
+    # HUD overlay: per-vehicle speed coloring + DRAC danger border + weather panel
+    capture_camera_hud_enabled: bool = False
+    capture_camera_hud_weather_panel: bool = True   # corner panel: road type, water film, μ
+    capture_camera_hud_speed_colors: bool = True    # vehicle fill = speed heat (cool→hot)
+    capture_camera_hud_drac_borders: bool = True    # vehicle border = DRAC level (green/yellow/red)
+    # Composite view: tile multiple envs side-by-side in one frame
+    capture_camera_composite_env_indices: str = ""  # e.g. "0,16,32,48"
+    capture_camera_composite_labels: str = ""       # e.g. "Dry,Light rain,Mod rain,Hydro"
+    capture_camera_composite_cols: int = 2          # tiles per row
+    # Trajectory trail: draw fading path history behind each vehicle
+    capture_camera_trail_length: int = 0            # 0 = disabled; 60–120 frames recommended
 
 
 class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
@@ -724,9 +1005,23 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
 
     def __init__(self, cfg: StudentVehicleMultiAgentGoalEnvCfg, render_mode: str | None = None, **kwargs):
         self._capture_camera: Camera | None = None
-        self._capture_cameras_per_env: list[Camera] = []  # for per_env view mode
+        self._capture_cameras_per_env: list[Camera] = []  # for per_env / composite view mode
+        self._composite_env_indices: list[int] = []       # actual env indices for composite cameras
         self._vehicle_proxy_marker: VisualizationMarkers | None = None
+        self._cone_marker: VisualizationMarkers | None = None
         self._capture_cam_center_xy: tuple[float, float] | None = None
+        # Per-camera bounds for composite 2D overlay (one entry per camera in _capture_cameras_per_env)
+        self._capture_cam_center_xy_per_env: list[tuple[float, float]] = []
+        self._capture_cam_half_w_per_env: list[float] = []
+        self._capture_cam_half_h_per_env: list[float] = []
+        # Weather metadata per env (populated in _apply_per_env_ground_friction)
+        self._mu_static_per_env: torch.Tensor | None = None
+        self._water_film_mm_per_env: list[float] = []
+        self._road_type_per_env: list[str] = []
+        # Trajectory trail ring buffer [num_agents, num_envs, trail_length, 2] — CPU numpy
+        self._trajectory_trail: np.ndarray | None = None
+        self._trajectory_trail_head: int = 0   # next write slot
+        self._trajectory_trail_count: int = 0  # how many slots are filled
         self._capture_cam_half_w: float = 0.0
         self._capture_cam_half_h: float = 0.0
         self._scenario_spawns: list | None = None
@@ -739,7 +1034,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._scene_factory_scene_json_paths_by_env: list[str] | None = None
         self._scene_factory_scene_cfgs_by_env: list[dict[str, Any]] | None = None
         self._scene_factory_specs_by_env: list | None = None
-        self._random_od_rng = np.random.default_rng(42)
+        self._random_od_rng = np.random.default_rng(int(getattr(cfg, "random_od_rng_seed", 42)))
         self._scene_factory_flatten_road_z = False
         self._scene_factory_ignore_dataset_spawn_z = False
         self._scene_factory_bounds_size_m = float(_scene_factory_bounds_size_from_cfg(cfg))
@@ -817,6 +1112,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._lane_touch_half_lengths_m = torch.zeros((0, 0), dtype=torch.float32)
         self._lane_touch_half_widths_m = torch.zeros((0, 0), dtype=torch.float32)
         self._lane_touch_types = torch.zeros((0, 0), dtype=torch.long)
+        self._lane_touch_ids = torch.zeros((0, 0), dtype=torch.long)
+        self._agent_host_polyline_id_np = None
+        self._agent_host_polyline_id = torch.zeros((0, 0), dtype=torch.long)
         self._lane_touch_valid = torch.zeros((0, 0), dtype=torch.bool)
         self._lane_touch_type_one_hot = torch.zeros((0, 0, 1), dtype=torch.bool)
         self._lane_touch_type_dim = 1
@@ -824,6 +1122,20 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._lane_touch_circle_centers_xy_b = torch.zeros((3, 2), dtype=torch.float32)
         self._lane_touch_circle_radius_m = 1.0
         self._lane_touch_mask = torch.zeros((0, 0, 1), dtype=torch.bool)
+        # Workzone cone tensors (loaded at env startup from USD custom metadata)
+        self._cone_positions_xy_m = torch.zeros((0, 0, 2), dtype=torch.float32)  # [num_envs, N_cones, 2]
+        self._cone_positions_valid = torch.zeros((0, 0), dtype=torch.bool)        # [num_envs, N_cones] True = real cone
+        self._cone_speed_limit_mps = torch.full((0,), -1.0, dtype=torch.float32)  # [num_envs]
+        # Optional callback invoked at the start of each _reset_idx call (after agents respawn).
+        # Set via env._cone_drop_fn = callable(env_ids) to enable episode-level cone randomization.
+        self._cone_drop_fn = None
+        # Workzone forbidden-box tensors (loaded from USD; zero-sized until _initialize_lane_touch_metadata runs)
+        self._forbidden_boxes_m = torch.zeros((0, 0, 5), dtype=torch.float32)    # [num_envs, M_boxes, 5]
+        self._forbidden_boxes_count = torch.zeros((0,), dtype=torch.long)         # [num_envs]
+        # Per-step workzone safety tracking [num_agents, num_envs]
+        self._episode_cone_near_miss_steps = torch.zeros((0, 0), dtype=torch.float32)
+        self._episode_speed_violation_steps = torch.zeros((0, 0), dtype=torch.float32)
+        self._episode_box_entry_steps = torch.zeros((0, 0), dtype=torch.float32)
         if bool(cfg.use_scene_factory_roads) and str(cfg.test_mode).strip().lower() != "collision_test":
             scene_factory_cfg = _load_yaml(cfg.scene_factory_config_path)
             road_cfg = dict(scene_factory_cfg.get("road", {}) or {})
@@ -835,16 +1147,24 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             cfg.scene_factory_world_index = int(resolved_specs[0].world_index)
             self._scene_factory_specs_by_env = list(resolved_specs)
             self._scenario_spawns_by_env = [list(spawns) for spawns in resolved_spawns_by_env]
+            # repeat_first_scene: clamp all envs to env-0's scene/spawns BEFORE arrays are built
+            if bool(cfg.repeat_first_scene) and len(self._scene_factory_specs_by_env) > 1:
+                n = len(self._scene_factory_specs_by_env)
+                self._scene_factory_specs_by_env = [self._scene_factory_specs_by_env[0]] * n
+                self._scenario_spawns_by_env = [self._scenario_spawns_by_env[0]] * n
+                resolved_specs = self._scene_factory_specs_by_env  # keep local in sync for weather ctx
             num_envs_cfg = max(1, int(cfg.scene.num_envs))
             num_agents_cfg = max(1, int(cfg.num_agents_per_env))
             spawn_start_local_np = np.zeros((num_envs_cfg, num_agents_cfg, 3), dtype=np.float32)
             spawn_start_yaw_np = np.zeros((num_envs_cfg, num_agents_cfg), dtype=np.float32)
             spawn_goal_local_np = np.zeros((num_envs_cfg, num_agents_cfg, 3), dtype=np.float32)
             spawn_valid_np = np.zeros((num_envs_cfg, num_agents_cfg), dtype=np.bool_)
+            host_pid_np = np.full((num_envs_cfg, num_agents_cfg), -1, dtype=np.int64)
             for env_idx, spawns in enumerate(self._scenario_spawns_by_env[:num_envs_cfg]):
                 active_agents = min(num_agents_cfg, len(spawns))
                 for agent_idx in range(active_agents):
                     spawn = spawns[agent_idx]
+                    host_pid_np[env_idx, agent_idx] = int(getattr(spawn, "host_polyline_id", -1))
                     spawn_start_local_np[env_idx, agent_idx] = np.asarray(spawn.start_local_xyz, dtype=np.float32)
                     spawn_start_yaw_np[env_idx, agent_idx] = float(spawn.start_yaw_rad)
                     spawn_goal_local_np[env_idx, agent_idx] = np.asarray(spawn.goal_local_xyz, dtype=np.float32)
@@ -854,6 +1174,11 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 str(Path(spec.scene_json_path).expanduser().resolve()) for spec in resolved_specs
             ]
             self._scene_factory_scene_json_path = str(self._scene_factory_scene_json_paths_by_env[0])
+            if bool(cfg.repeat_first_scene):
+                first_path = self._scene_factory_scene_json_paths_by_env[0]
+                n = len(self._scene_factory_scene_json_paths_by_env)
+                self._scene_factory_scene_json_paths_by_env = [first_path] * n
+                print(f"[INFO][SceneFactory] repeat_first_scene=True: all {n} envs use {first_path}", flush=True)
             if bool(cfg.random_od):
                 self._scene_factory_scene_cfgs_by_env = [
                     _load_scene_cfg(p) for p in self._scene_factory_scene_json_paths_by_env
@@ -873,6 +1198,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._scene_factory_spawn_start_yaw = spawn_start_yaw_np
             self._scene_factory_spawn_goal_local = spawn_goal_local_np
             self._scene_factory_spawn_valid = spawn_valid_np
+            # [num_envs, num_agents]; promoted to an [A, E] tensor once the
+            # device exists (self.device is only set by super().__init__ below).
+            self._agent_host_polyline_id_np = host_pid_np
             if self._scene_factory_ignore_dataset_spawn_z:
                 print(
                     "[INFO][SceneFactory] flatten_road_z=true: ignoring dataset spawn/goal z and using flat training heights.",
@@ -936,6 +1264,15 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._terminal_goal_distance = torch.zeros(self._num_agents, self.num_envs, device=self.device)
         self._previous_root_pos_xy = torch.zeros(self._num_agents, self.num_envs, 2, device=self.device)
         self._spawned_agent_mask = torch.ones(self._num_agents, self.num_envs, dtype=torch.bool, device=self.device)
+        # Additive per-agent START-lane record [num_envs, num_agents]: the JSON
+        # polyline `id` each spawned agent seats on (-1 = unspawned / non-OD mode).
+        # Written by _resample_random_od_for_envs; read ONLY by the optimizer's
+        # spawn audit to classify closed-vs-open cars by their ACTUAL lane instead
+        # of the (wrong once N < budget) agent-slot midpoint. Does not affect any
+        # spawn/goal/reward behaviour.
+        self._agent_spawn_polyline_id = torch.full(
+            (self.num_envs, self._num_agents), -1, dtype=torch.long, device=self.device
+        )
         self._agent_done_mask = torch.zeros(self._num_agents, self.num_envs, dtype=torch.bool, device=self.device)
         self._goal_done_mask = torch.zeros(self._num_agents, self.num_envs, dtype=torch.bool, device=self.device)
         self._collision_done_mask = torch.zeros(self._num_agents, self.num_envs, dtype=torch.bool, device=self.device)
@@ -944,6 +1281,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._crash_too_far_done_mask = torch.zeros(self._num_agents, self.num_envs, dtype=torch.bool, device=self.device)
         self._crash_bad_tilt_done_mask = torch.zeros(self._num_agents, self.num_envs, dtype=torch.bool, device=self.device)
         self._lane_forbidden_done_mask = torch.zeros(
+            self._num_agents, self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self._cone_collision_done_mask = torch.zeros(
             self._num_agents, self.num_envs, dtype=torch.bool, device=self.device
         )
         self._pending_goal_done_mask = torch.zeros(self._num_agents, self.num_envs, dtype=torch.bool, device=self.device)
@@ -971,21 +1311,32 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._episode_ttc_finite_steps = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
         self._episode_near_miss_steps = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
         self._episode_max_drac = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
+        self._step_drac_by_agent = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
         # Lifetime TTC / DRAC counters
         self._lifetime_near_miss_count = 0.0
         self._lifetime_high_drac_count = 0.0
         self._lifetime_ttc_episode_count = 0.0  # episodes with ≥1 finite TTC step
 
+        # Workzone safety episode tracking (shape: [num_agents, num_envs])
+        self._episode_cone_near_miss_steps = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
+        self._episode_speed_violation_steps = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
+        self._episode_box_entry_steps = torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
+
         if self._scene_factory_spawn_valid is not None:
             self._spawned_agent_mask = self._scene_factory_spawn_valid.transpose(0, 1).clone()
 
         self._steer_joint_ids: list[list[int]] = []
+        # Front pair only. Currently built but unused: drive is applied to all
+        # four wheels (see _wheel_joint_ids below and _apply_action).
         self._drive_joint_ids: list[list[int]] = []
-        self._brake_joint_ids: list[list[int]] = []
+        # All four wheel rotation joints. These carry BOTH the brake effort and
+        # the drive velocity target, so they are named for what they are (wheels)
+        # rather than for one of the two things done to them.
         self._wheel_joint_ids: list[list[int]] = []
         self._suspension_joint_ids: list[list[int]] = []
         self._base_body_id: list[list[int]] = []
         self._base_body_ids: list[torch.Tensor] = []
+        self._wheel_body_ids_by_agent: list[torch.Tensor] = []
         self._joint_effort_targets: list[torch.Tensor] = []
         self._external_forces: list[torch.Tensor] = []
         self._external_torques: list[torch.Tensor] = []
@@ -1001,7 +1352,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             drive_joint_ids, _ = vehicle.find_joints(
                 ["front_left_wheel_joint", "front_right_wheel_joint"], preserve_order=True
             )
-            brake_joint_ids, _ = vehicle.find_joints(
+            wheel_joint_ids, _ = vehicle.find_joints(
                 [
                     "front_left_wheel_joint",
                     "front_right_wheel_joint",
@@ -1020,17 +1371,28 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 preserve_order=True,
             )
             base_body_id, _ = vehicle.find_bodies("base_link")
+            wheel_body_id, _ = vehicle.find_bodies(
+                [
+                    "front_left_wheel_link",
+                    "front_right_wheel_link",
+                    "rear_left_wheel_link",
+                    "rear_right_wheel_link",
+                ],
+                preserve_order=True,
+            )
+            self._wheel_body_ids_by_agent.append(
+                torch.tensor(wheel_body_id, dtype=torch.long, device=self.device)
+            )
             self._steer_joint_ids.append(list(steer_joint_ids))
             self._drive_joint_ids.append(list(drive_joint_ids))
-            self._brake_joint_ids.append(list(brake_joint_ids))
-            self._wheel_joint_ids.append(list(brake_joint_ids))
+            self._wheel_joint_ids.append(list(wheel_joint_ids))
             self._suspension_joint_ids.append(list(suspension_joint_ids))
             self._base_body_id.append(list(base_body_id))
             self._base_body_ids.append(torch.tensor(base_body_id, dtype=torch.int32, device=self.device))
             self._joint_effort_targets.append(torch.zeros(self.num_envs, vehicle.num_joints, device=self.device))
             self._external_forces.append(torch.zeros(self.num_envs, len(base_body_id), 3, device=self.device))
             self._external_torques.append(torch.zeros(self.num_envs, len(base_body_id), 3, device=self.device))
-            self._brake_sign_memory.append(torch.ones(self.num_envs, len(brake_joint_ids), device=self.device))
+            self._brake_sign_memory.append(torch.ones(self.num_envs, len(wheel_joint_ids), device=self.device))
             self._default_root_pose.append(vehicle.data.default_root_state[:, :7].clone())
             self._default_joint_pos.append(vehicle.data.default_joint_pos.clone())
             self._default_joint_vel.append(vehicle.data.default_joint_vel.clone())
@@ -1048,11 +1410,17 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 ),
                 joint_ids=steer_joint_ids,
             )
+            # Set wheel joint Coulomb friction to ZERO.  The API
+            # set_dof_friction_properties applies friction proportional to the
+            # joint constraint force (Coulomb, not viscous), so the sysid value
+            # of 1.647 created ~2000 Ns/m effective drag at driving conditions,
+            # capping the vehicle at ~1.5 m/s.  The intended viscous drag is
+            # instead applied as an explicit body-frame force in _apply_action().
             vehicle.write_joint_viscous_friction_coefficient_to_sim(
                 joint_viscous_friction_coeff=torch.zeros(
-                    (self.num_envs, len(brake_joint_ids)), device=self.device,
+                    (self.num_envs, len(wheel_joint_ids)), device=self.device,
                 ),
-                joint_ids=brake_joint_ids,
+                joint_ids=wheel_joint_ids,
             )
             # Suspension: zero BOTH the Coulomb and viscous terms. The 120 term
             # was a crutch stiffening an under-sprung suspension; with the spring
@@ -1089,12 +1457,15 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                     joint_ids=suspension_joint_ids,
                 )
 
-        # --- Apply per-env tire friction from weather/friction pipeline ---
-        self._apply_per_env_tire_friction()
+        # --- Apply per-env ground friction from weather/friction pipeline ---
+        self._apply_per_env_ground_friction()
+        # Must follow the ground write: it raises the "min" ceiling that would
+        # otherwise clip the per-env ground μ just applied above.
+        self._apply_uniform_wheel_friction_cap()
 
         self._steer_joint_ids_tensor = torch.tensor(self._steer_joint_ids, dtype=torch.long, device=self.device)
         self._drive_joint_ids_tensor = torch.tensor(self._drive_joint_ids, dtype=torch.long, device=self.device)
-        self._brake_joint_ids_tensor = torch.tensor(self._brake_joint_ids, dtype=torch.long, device=self.device)
+        self._wheel_joint_ids_tensor = torch.tensor(self._wheel_joint_ids, dtype=torch.long, device=self.device)
 
         self._steer_limit = float(self._tunable_config.steering_limit_rad)
         self._dry_longitudinal_scale = float(self._tunable_config.surface_longitudinal_scale.get("dry_asphalt", 1.0))
@@ -1124,6 +1495,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             "road_edge_ttc_penalty",
             "geom_lane_reward",
             "geom_route_progress",
+            "workzone_cone_penalty",
+            "workzone_speed_penalty",
+            "workzone_box_penalty",
         )
         self._episode_sums = {
             key: torch.zeros(self._num_agents, self.num_envs, dtype=torch.float32, device=self.device)
@@ -1215,11 +1589,21 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self.scene.articulations[agent_id] = vehicle
         self._register_vehicle_contact_sensors()
 
+        # Always hide the source prototype vehicle that Isaac Lab's cloner leaves in env_0.
+        # env_0 is used as the cloning template and never receives simulation commands,
+        # so without this it appears as a static ghost at each world's origin.
+        self._hide_source_vehicle(stage)
+
         if bool(self.cfg.friction_ruler_mode):
             self._build_friction_ruler_visuals(stage)
         # Hide USD vehicle meshes & spawn 3D proxy markers whenever proxy markers are enabled
         if bool(self.cfg.vehicle_proxy_marker_enable) or bool(self.cfg.friction_ruler_mode):
             self._hide_vehicle_visuals(stage)
+        else:
+            # Proxy markers are disabled — native USD vehicle prims should render.
+            # Explicitly MakeVisible on every env's vehicle prims to neutralise any
+            # inherited invisible opinion from USD inherit arcs or prior cloning passes.
+            self._make_vehicles_visible(stage)
         if bool(self.cfg.vehicle_proxy_marker_enable):
             if self._vehicle_proxy_marker is None:
                 self._vehicle_proxy_marker = _build_vehicle_proxy_marker(
@@ -1229,6 +1613,12 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                     vehicle_width_m=float(self._vehicle_width_m),
                 )
             self._vehicle_proxy_marker.set_visibility(True)
+
+        # Runtime cone beacons: mirror the vehicle-proxy pattern for tensor-only cones.
+        if bool(getattr(self.cfg, "video_cone_markers", False)):
+            if self._cone_marker is None:
+                self._cone_marker = _build_cone_marker("/Visuals/RuntimeConeMarkers")
+            self._cone_marker.set_visibility(True)
 
         # Visually hide road types that shouldn't appear on camera (e.g. lane centers)
         if hasattr(self.cfg, "road_hidden_types") and self.cfg.road_hidden_types:
@@ -1272,10 +1662,21 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
 
         view_mode = str(self.cfg.capture_camera_view_mode).strip().lower()
 
-        if view_mode == "per_env":
-            # Spawn one camera per environment
+        if view_mode in ("per_env", "composite"):
+            # Parse composite env indices (for composite mode); all envs for per_env mode
+            if view_mode == "composite":
+                raw = str(self.cfg.capture_camera_composite_env_indices).strip()
+                if raw:
+                    self._composite_env_indices = [int(x.strip()) for x in raw.split(",") if x.strip()]
+                if not self._composite_env_indices:
+                    self._composite_env_indices = list(range(self.num_envs))
+                cam_env_indices = self._composite_env_indices
+            else:
+                self._composite_env_indices = []
+                cam_env_indices = list(range(self.num_envs))
+
             self._capture_cameras_per_env = []
-            for ei in range(self.num_envs):
+            for ei in cam_env_indices:
                 cam_cfg = CameraCfg(
                     prim_path=f"/World/SceneFactoryCaptureCamera_env{ei}",
                     update_period=0.0,
@@ -1293,7 +1694,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                     ),
                 )
                 self._capture_cameras_per_env.append(Camera(cam_cfg))
-            self._capture_camera = None  # not used in per_env mode
+            self._capture_camera = None  # not used in per_env / composite mode
             return
 
         camera_cfg = CameraCfg(
@@ -1314,13 +1715,55 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         )
         self._capture_camera = Camera(camera_cfg)
 
+    def _scene_factory_world_capture_size(self) -> tuple[float, float] | None:
+        """Return per-world map size for top-down SceneFactory video framing."""
+        if not bool(self.cfg.use_scene_factory_roads):
+            return None
+        # Fixed-span override: frame a tight window centered on the env origin so
+        # vehicles and cones read clearly on large scenes.
+        fixed_span = float(getattr(self.cfg, "capture_camera_fixed_span_m", 0.0))
+        if fixed_span > 0.0:
+            return (fixed_span, fixed_span)
+        try:
+            scene_factory_cfg = _load_yaml(self.cfg.scene_factory_config_path)
+            world_cfg = scene_factory_cfg.get("world", {}) or {}
+            world_size = world_cfg.get("world_size_m")
+            if isinstance(world_size, (list, tuple)) and len(world_size) >= 2:
+                return (float(world_size[0]), float(world_size[1]))
+            bounds_size = world_cfg.get("bounds_size_m")
+            if bounds_size is not None:
+                size = float(bounds_size)
+                return (size, size)
+        except Exception:
+            return None
+        return None
+
+    def _top_down_capture_height_for_size(self, width_m: float, height_m: float) -> tuple[float, float, float]:
+        padding = float(self.cfg.capture_camera_padding_scale)
+        desired_half_w = max(1.0, 0.5 * float(width_m) * padding)
+        desired_half_h = max(1.0, 0.5 * float(height_m) * padding)
+        image_aspect_h_over_w = int(self.cfg.capture_camera_height) / max(1, int(self.cfg.capture_camera_width))
+        required_half_w = max(desired_half_w, desired_half_h / max(1.0e-6, image_aspect_h_over_w))
+        h_aperture = float(self.cfg.capture_camera_horizontal_aperture)
+        f_length = float(self.cfg.capture_camera_focal_length)
+        capture_height = required_half_w * (2.0 * f_length) / max(1.0e-6, h_aperture)
+        return max(40.0, capture_height), required_half_w, required_half_w * image_aspect_h_over_w
+
     def _configure_capture_camera_pose(self) -> None:
         env_origins = self.scene.env_origins.detach()
+        scene_factory_world_size = self._scene_factory_world_capture_size()
 
-        # --- per_env mode: position each camera over its env ---
+        # --- per_env / composite mode: position each camera over its env ---
         if self._capture_cameras_per_env:
-            for ei, cam in enumerate(self._capture_cameras_per_env):
-                sc = env_origins[ei]
+            # composite mode uses actual env indices; per_env uses sequential 0..N-1
+            actual_indices = self._composite_env_indices if self._composite_env_indices else list(range(len(self._capture_cameras_per_env)))
+            h_aperture = float(self.cfg.capture_camera_horizontal_aperture)
+            f_length = float(self.cfg.capture_camera_focal_length)
+            self._capture_cam_center_xy_per_env = []
+            self._capture_cam_half_w_per_env = []
+            self._capture_cam_half_h_per_env = []
+            for cam_slot, (cam, actual_ei) in enumerate(zip(self._capture_cameras_per_env, actual_indices)):
+                sc = env_origins[actual_ei]
                 if bool(self.cfg.friction_ruler_mode):
                     # Friction ruler: top-down camera centered on the car's starting position
                     h = 50.0
@@ -1354,11 +1797,23 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                         )
                     else:
                         # Default top-down
-                        coverage_radius = float(self.cfg.max_distance_from_origin_m) * float(self.cfg.capture_camera_padding_scale)
-                        h = max(40.0, float(self.cfg.capture_camera_height_scale) * float(max(25.0, coverage_radius)))
+                        if scene_factory_world_size is not None:
+                            h, _, _ = self._top_down_capture_height_for_size(*scene_factory_world_size)
+                        else:
+                            coverage_radius = float(self.cfg.max_distance_from_origin_m) * float(self.cfg.capture_camera_padding_scale)
+                            h = max(40.0, float(self.cfg.capture_camera_height_scale) * float(max(25.0, coverage_radius)))
                         eye = torch.tensor([[float(sc[0]), float(sc[1]), h]], dtype=torch.float32, device=self.device)
                         target = torch.tensor([[float(sc[0]), float(sc[1]), 0.0]], dtype=torch.float32, device=self.device)
                 cam.set_world_poses_from_view(eyes=eye, targets=target)
+                # Store projection bounds for 2D overlay on this per-env camera
+                # Use target xy as view center and eye z as approximate camera height
+                center_x, center_y = float(target[0, 0].cpu()), float(target[0, 1].cpu())
+                cam_h_val = float(eye[0, 2].cpu())
+                half_w = cam_h_val * h_aperture / (2.0 * f_length)
+                half_h = half_w * int(self.cfg.capture_camera_height) / max(1, int(self.cfg.capture_camera_width))
+                self._capture_cam_center_xy_per_env.append((center_x, center_y))
+                self._capture_cam_half_w_per_env.append(half_w)
+                self._capture_cam_half_h_per_env.append(half_h)
             return
 
         if self._capture_camera is None:
@@ -1384,7 +1839,10 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             env_index = int(np.clip(int(self.cfg.capture_camera_env_index), 0, max(self.num_envs - 1, 0)))
             scene_center = env_origins[env_index]
             xy_extent = 0.0
-            coverage_radius = float(self.cfg.max_distance_from_origin_m) * float(self.cfg.capture_camera_padding_scale)
+            if scene_factory_world_size is not None:
+                coverage_radius = 0.5 * max(scene_factory_world_size) * float(self.cfg.capture_camera_padding_scale)
+            else:
+                coverage_radius = float(self.cfg.max_distance_from_origin_m) * float(self.cfg.capture_camera_padding_scale)
         else:
             scene_center = env_origins.mean(dim=0)
             if self.num_envs > 1:
@@ -1424,10 +1882,18 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             )
             capture_height = cam_h  # for projection params below
         else:
-            capture_height = max(
-                40.0,
-                float(self.cfg.capture_camera_height_scale) * float(max(25.0, coverage_radius)),
-            )
+            if scene_factory_world_size is not None:
+                if view_mode == "single_env":
+                    capture_height, _, _ = self._top_down_capture_height_for_size(*scene_factory_world_size)
+                else:
+                    grid_width = 2.0 * (float(xy_extent) + 0.5 * scene_factory_world_size[0] + float(self.cfg.scene.env_spacing) * 0.25)
+                    grid_height = 2.0 * (float(xy_extent) + 0.5 * scene_factory_world_size[1] + float(self.cfg.scene.env_spacing) * 0.25)
+                    capture_height, _, _ = self._top_down_capture_height_for_size(grid_width, grid_height)
+            else:
+                capture_height = max(
+                    40.0,
+                    float(self.cfg.capture_camera_height_scale) * float(max(25.0, coverage_radius)),
+                )
             eye = torch.tensor(
                 [[float(scene_center[0]), float(scene_center[1]), capture_height]],
                 dtype=torch.float32,
@@ -1446,8 +1912,31 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._capture_cam_half_w = capture_height * h_aperture / (2.0 * f_length)
         self._capture_cam_half_h = self._capture_cam_half_w * int(self.cfg.capture_camera_height) / max(1, int(self.cfg.capture_camera_width))
 
+    def _update_cone_markers(self) -> None:
+        """Sync runtime cone beacon positions with the _cone_positions_xy_m tensor.
+
+        Cones are stored env-local; convert to world by adding env origins. Invalid
+        cone slots are pushed far underground so they don't render.
+        """
+        if self._cone_marker is None:
+            return
+        if not hasattr(self, "_cone_positions_xy_m"):
+            return
+        max_c = int(self._cone_positions_xy_m.shape[1])
+        if max_c == 0:
+            return
+        env_origins = self.scene.env_origins  # [E, 3]
+        world_xy = self._cone_positions_xy_m + env_origins[:, :2].unsqueeze(1)  # [E, C, 2]
+        z = torch.zeros((self.num_envs, max_c, 1), dtype=torch.float32, device=self.device)
+        if hasattr(self, "_cone_positions_valid"):
+            z[~self._cone_positions_valid] = -500.0  # hide invalid slots underground
+        pos = torch.cat([world_xy, z], dim=-1).reshape(-1, 3)  # [E*C, 3]
+        idx = torch.zeros(pos.shape[0], dtype=torch.int32, device=self.device)
+        self._cone_marker.visualize(translations=pos, marker_indices=idx)
+
     def _update_vehicle_proxy_markers(self) -> None:
         """Sync 3D low-poly proxy marker positions/orientations with current vehicle state."""
+        self._update_cone_markers()
         if self._vehicle_proxy_marker is None:
             return
         positions = []
@@ -1703,19 +2192,125 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._capture_camera.set_world_poses_from_view(eyes=eye, targets=target)
         self._drift_frame += 1
 
+    def _chase_eye_target(self, agent_idx: int, env_idx: int,
+                          distance_m: float, height_m: float, look_h: float):
+        """Return (eye, target) tensors for a chase camera behind the given agent."""
+        import math as _math
+        vehicle = self._vehicles[agent_idx]
+        pos  = vehicle.data.root_pos_w[env_idx]
+        quat = vehicle.data.root_quat_w[env_idx]
+        qw, qx, qy, qz = float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])
+        yaw = _math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        # Vehicle forward direction in XY
+        fwd_x = _math.cos(yaw)
+        fwd_y = _math.sin(yaw)
+        eye_x = float(pos[0]) - fwd_x * distance_m
+        eye_y = float(pos[1]) - fwd_y * distance_m
+        eye   = torch.tensor([[eye_x, eye_y, height_m]], dtype=torch.float32, device=self.device)
+        target = torch.tensor([[float(pos[0]), float(pos[1]), look_h]], dtype=torch.float32, device=self.device)
+        return eye, target
+
+    def _update_chase_camera(self) -> None:
+        """3rd-person chase camera: follows capture_camera_chase_agent_index from behind."""
+        if self._capture_camera is None:
+            return
+        if str(self.cfg.capture_camera_pose_mode).strip().lower() != "chase":
+            return
+        if not self._vehicles:
+            return
+        agent_idx = int(self.cfg.capture_camera_chase_agent_index) % max(1, len(self._vehicles))
+        env_idx   = int(self.cfg.capture_camera_chase_env_index) % max(1, self.num_envs)
+        eye, target = self._chase_eye_target(
+            agent_idx, env_idx,
+            float(self.cfg.capture_camera_chase_distance_m),
+            float(self.cfg.capture_camera_chase_height_m),
+            float(self.cfg.capture_camera_chase_look_height_m),
+        )
+        alpha = float(self.cfg.capture_camera_chase_smoothing)
+        if alpha > 0.0 and hasattr(self, "_chase_eye_prev"):
+            eye = self._chase_eye_prev * alpha + eye * (1.0 - alpha)
+        self._chase_eye_prev = eye.clone()
+        self._capture_camera.set_world_poses_from_view(eyes=eye, targets=target)
+
+    def _update_broadcast_camera(self) -> None:
+        """Broadcast camera: cuts between agents on a fixed schedule (chase view of each)."""
+        if self._capture_camera is None:
+            return
+        if str(self.cfg.capture_camera_pose_mode).strip().lower() != "broadcast":
+            return
+        if not self._vehicles:
+            return
+        if not hasattr(self, "_broadcast_frame"):
+            self._broadcast_frame = 0
+            if self.cfg.capture_camera_broadcast_all_worlds:
+                # Build flat list of (agent_idx, env_idx) pairs covering every world
+                self._broadcast_pairs: list[tuple[int, int]] = [
+                    (agent_idx, env_idx)
+                    for env_idx in range(self.num_envs)
+                    for agent_idx in range(len(self._vehicles))
+                ]
+            else:
+                raw = str(self.cfg.capture_camera_broadcast_agent_indices).strip()
+                if raw:
+                    self._broadcast_agent_list = [int(x) % max(1, len(self._vehicles))
+                                                   for x in raw.split(",") if x.strip()]
+                else:
+                    self._broadcast_agent_list = list(range(len(self._vehicles)))
+        hold = max(1, int(self.cfg.capture_camera_broadcast_hold_frames))
+        if self.cfg.capture_camera_broadcast_all_worlds:
+            slot = (self._broadcast_frame // hold) % max(1, len(self._broadcast_pairs))
+            agent_idx, env_idx = self._broadcast_pairs[slot]
+        else:
+            slot = (self._broadcast_frame // hold) % max(1, len(self._broadcast_agent_list))
+            agent_idx = self._broadcast_agent_list[slot]
+            env_idx   = int(self.cfg.capture_camera_broadcast_env_index) % max(1, self.num_envs)
+        eye, target = self._chase_eye_target(
+            agent_idx, env_idx,
+            float(self.cfg.capture_camera_broadcast_distance_m),
+            float(self.cfg.capture_camera_broadcast_height_m),
+            float(self.cfg.capture_camera_broadcast_look_height_m),
+        )
+        self._capture_camera.set_world_poses_from_view(eyes=eye, targets=target)
+        self._broadcast_frame += 1
+
+    def _update_trajectory_trail(self) -> None:
+        """Push current vehicle XY world positions into the ring buffer for trail rendering."""
+        trail_len = int(getattr(self.cfg, "capture_camera_trail_length", 0))
+        if trail_len <= 0:
+            return
+        n_agents = self._num_agents
+        n_envs = self.num_envs
+        if self._trajectory_trail is None or self._trajectory_trail.shape != (n_agents, n_envs, trail_len, 2):
+            self._trajectory_trail = np.zeros((n_agents, n_envs, trail_len, 2), dtype=np.float32)
+            self._trajectory_trail_head = 0
+            self._trajectory_trail_count = 0
+        slot = self._trajectory_trail_head
+        for agent_idx, vehicle in enumerate(self._vehicles):
+            pos = vehicle.data.root_pos_w[:, :2].detach().cpu().numpy()  # [num_envs, 2]
+            self._trajectory_trail[agent_idx, :, slot, :] = pos
+        self._trajectory_trail_head = (slot + 1) % trail_len
+        self._trajectory_trail_count = min(self._trajectory_trail_count + 1, trail_len)
+
     def capture_fixed_camera_frame(self) -> np.ndarray | None:
         if self._capture_camera is None:
             return None
+        self._update_trajectory_trail()
         self._update_flyover_camera()
         self._update_flyover_drift_camera()
+        self._update_chase_camera()
+        self._update_broadcast_camera()
         self._update_vehicle_proxy_markers()
         self._capture_camera.update(self.step_dt)
         rgb = self._capture_camera.data.output.get("rgb")
         if rgb is None or rgb.numel() == 0:
             return None
         frame = rgb[0].detach().cpu().numpy().copy()
-        if bool(self.cfg.vehicle_proxy_marker_enable):
+        hud_enabled = bool(getattr(self.cfg, "capture_camera_hud_enabled", False))
+        if (bool(self.cfg.vehicle_proxy_marker_enable) and bool(self.cfg.vehicle_proxy_marker_2d_overlay)) or hud_enabled:
             frame = self._overlay_vehicle_proxy_markers_2d(frame)
+        if hud_enabled and bool(getattr(self.cfg, "capture_camera_hud_weather_panel", True)):
+            env_idx = int(np.clip(int(self.cfg.capture_camera_env_index), 0, max(self.num_envs - 1, 0)))
+            frame = self._overlay_weather_hud(frame, env_idx)
         return frame
 
     def capture_per_env_frames(self) -> list[np.ndarray | None]:
@@ -1733,13 +2328,38 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 frames.append(rgb[0].detach().cpu().numpy().copy())
         return frames
 
-    def _overlay_vehicle_proxy_markers_2d(self, frame: np.ndarray) -> np.ndarray:
-        """Draw color-coded oriented rectangles at vehicle positions on the captured frame."""
-        if self._capture_cam_center_xy is None or self._capture_cam_half_w <= 0:
-            return frame
-        cx, cy = self._capture_cam_center_xy
-        half_w = self._capture_cam_half_w
-        half_h = self._capture_cam_half_h
+    def _overlay_vehicle_proxy_markers_2d(
+        self,
+        frame: np.ndarray,
+        env_idx: int | None = None,
+        cam_center_xy: tuple[float, float] | None = None,
+        cam_half_w: float | None = None,
+        cam_half_h: float | None = None,
+    ) -> np.ndarray:
+        """Draw color-coded oriented rectangles at vehicle positions on the captured frame.
+
+        When env_idx / cam_center_xy / cam_half_w / cam_half_h are None, falls back to the
+        main camera bounds (whole_grid / single_env mode).  Composite mode passes per-camera
+        values explicitly.
+
+        When cfg.capture_camera_hud_speed_colors is True, fills vehicles with a speed-heat
+        color (cool blue = slow → hot red = fast, max ~15 m/s).
+        When cfg.capture_camera_hud_drac_borders is True, colors borders green / yellow / red
+        by instantaneous DRAC level.
+        """
+        if cam_center_xy is not None:
+            cx, cy = cam_center_xy
+            half_w = cam_half_w if cam_half_w is not None else 1.0
+            half_h = cam_half_h if cam_half_h is not None else 1.0
+        else:
+            if self._capture_cam_center_xy is None or self._capture_cam_half_w <= 0:
+                return frame
+            cx, cy = self._capture_cam_center_xy
+            half_w = self._capture_cam_half_w
+            half_h = self._capture_cam_half_h
+        if env_idx is None:
+            env_idx = int(np.clip(int(self.cfg.capture_camera_env_index), 0, max(self.num_envs - 1, 0)))
+
         img_h, img_w = frame.shape[:2]
         n_channels = frame.shape[2] if frame.ndim == 3 else 1
 
@@ -1753,7 +2373,10 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             (242, 77, 184),
             (166, 217, 46),
         ]
-        env_idx = int(np.clip(int(self.cfg.capture_camera_env_index), 0, max(self.num_envs - 1, 0)))
+        hud_speed = bool(getattr(self.cfg, "capture_camera_hud_speed_colors", False)) and bool(getattr(self.cfg, "capture_camera_hud_enabled", False))
+        hud_drac = bool(getattr(self.cfg, "capture_camera_hud_drac_borders", False)) and bool(getattr(self.cfg, "capture_camera_hud_enabled", False))
+        speed_max = 15.0  # m/s — reference top speed for color mapping
+
         vlen = float(self._vehicle_length_m)
         vwid = float(self._vehicle_width_m)
         try:
@@ -1762,25 +2385,84 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         except ImportError:
             _has_cv2 = False
 
+        def _speed_heat_color(speed_mps: float, n_ch: int) -> tuple:
+            """Map speed 0→speed_max to cool-blue→hot-red via cyan-green-yellow midpoint."""
+            t = min(1.0, max(0.0, speed_mps / speed_max))
+            if t < 0.5:
+                s = t * 2.0
+                r = int(0 + s * (255 - 0))
+                g = int(180 + s * (220 - 180))
+                b = int(220 - s * 220)
+            else:
+                s = (t - 0.5) * 2.0
+                r = 255
+                g = int(220 - s * 220)
+                b = 0
+            rgb = (r, g, b)
+            return rgb + (255,) * (n_ch - 3) if n_ch > 3 else rgb
+
+        def _drac_border_color(drac: float, n_ch: int) -> tuple:
+            """DRAC ≤1.0: green, 1.0–3.4: yellow, >3.4: red."""
+            if drac > 3.4:
+                rgb = (230, 30, 30)
+            elif drac > 1.0:
+                rgb = (230, 200, 20)
+            else:
+                rgb = (30, 210, 60)
+            return rgb + (255,) * (n_ch - 3) if n_ch > 3 else rgb
+
         for agent_idx, vehicle in enumerate(self._vehicles):
-            # Skip un-spawned (inactive / limbo) agents
             if hasattr(self, "_spawned_agent_mask"):
                 if not bool(self._spawned_agent_mask[agent_idx, env_idx].item()):
                     continue
 
             pos = vehicle.data.root_pos_w[env_idx]
-            quat = vehicle.data.root_quat_w[env_idx]  # (w, x, y, z)
+            quat = vehicle.data.root_quat_w[env_idx]
             wx, wy = float(pos[0]), float(pos[1])
 
-            # Skip vehicles that are clearly outside the camera view (limbo / stale)
             if abs(wx - cx) > half_w * 3 or abs(wy - cy) > half_h * 3:
                 continue
 
             qw, qx, qy, qz = float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])
             yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
-            color_rgb = palette[agent_idx % len(palette)]
-            # Pad to match frame channels (e.g. RGBA)
-            color = color_rgb + (255,) * (n_channels - 3) if n_channels > 3 else color_rgb
+
+            if hud_speed:
+                vel = vehicle.data.root_lin_vel_w[env_idx]
+                speed = float(torch.linalg.norm(vel[:2]).item())
+                fill_color = _speed_heat_color(speed, n_channels)
+            else:
+                color_rgb = palette[agent_idx % len(palette)]
+                fill_color = color_rgb + (255,) * (n_channels - 3) if n_channels > 3 else color_rgb
+
+            if hud_drac and self._step_drac_by_agent is not None:
+                drac_val = float(self._step_drac_by_agent[agent_idx, env_idx].item())
+                border_color = _drac_border_color(drac_val, n_channels)
+            else:
+                border_color = tuple([255] * n_channels)
+
+            # ── Trajectory trail ──────────────────────────────────────────────
+            if _has_cv2 and self._trajectory_trail is not None and self._trajectory_trail_count > 1:
+                trail_len = self._trajectory_trail.shape[2]
+                n_trail = min(self._trajectory_trail_count, trail_len)
+                base_r = int(fill_color[0] if not hud_speed else palette[agent_idx % len(palette)][0])
+                base_g = int(fill_color[1] if not hud_speed else palette[agent_idx % len(palette)][1])
+                base_b = int(fill_color[2] if not hud_speed else palette[agent_idx % len(palette)][2])
+                dot_radius_max = max(3, int(round(min(img_w, img_h) * 0.004)))
+                head = self._trajectory_trail_head
+                for step_back in range(1, n_trail):
+                    slot = (head - step_back) % trail_len
+                    tx = float(self._trajectory_trail[agent_idx, env_idx, slot, 0])
+                    ty = float(self._trajectory_trail[agent_idx, env_idx, slot, 1])
+                    if abs(tx - cx) > half_w * 3 or abs(ty - cy) > half_h * 3:
+                        continue
+                    # fade: step_back=1 is brightest, step_back=n_trail is dimmest
+                    alpha = max(0.08, 1.0 - step_back / max(1, n_trail))
+                    dot_r = max(1, int(dot_radius_max * alpha))
+                    tc = (int(base_r * alpha), int(base_g * alpha), int(base_b * alpha))
+                    tc = tc + (255,) * (n_channels - 3) if n_channels > 3 else tc
+                    tpx = int(((tx - cx) / half_w + 1.0) * 0.5 * img_w)
+                    tpy = int((1.0 - (ty - cy) / half_h) * 0.5 * img_h)
+                    cv2.circle(frame, (tpx, tpy), dot_r, tc, -1)
 
             if _has_cv2:
                 fwd = np.array([math.cos(yaw), math.sin(yaw)])
@@ -1797,9 +2479,14 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                     px_row = int((1.0 - (c[1] - cy) / half_h) * 0.5 * img_h)
                     corners_px.append([px_col, px_row])
                 pts = np.array(corners_px, dtype=np.int32)
-                cv2.fillPoly(frame, [pts], color)
-                border_color = tuple([255] * n_channels)
-                cv2.polylines(frame, [pts], True, border_color, 1)
+                cv2.fillPoly(frame, [pts], fill_color)
+                border_thickness = 3 if hud_drac else 1
+                cv2.polylines(frame, [pts], True, border_color, border_thickness)
+                px_col = int(((wx - cx) / half_w + 1.0) * 0.5 * img_w)
+                px_row = int((1.0 - (wy - cy) / half_h) * 0.5 * img_h)
+                marker_radius = max(4, int(round(min(img_w, img_h) * 0.006)))
+                cv2.circle(frame, (px_col, px_row), marker_radius, fill_color, thickness=-1)
+                cv2.circle(frame, (px_col, px_row), marker_radius, border_color, thickness=1)
             else:
                 px_col = int(((wx - cx) / half_w + 1.0) * 0.5 * img_w)
                 px_row = int((1.0 - (wy - cy) / half_h) * 0.5 * img_h)
@@ -1807,9 +2494,154 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 r1, r2 = max(0, px_row - px_half), min(img_h, px_row + px_half)
                 c1, c2 = max(0, px_col - px_half), min(img_w, px_col + px_half)
                 if r1 < r2 and c1 < c2:
-                    frame[r1:r2, c1:c2] = color
+                    frame[r1:r2, c1:c2] = fill_color
 
         return frame
+
+    def _overlay_weather_hud(self, frame: np.ndarray, env_idx: int) -> np.ndarray:
+        """Draw a translucent corner panel showing friction condition for this env.
+
+        Panel content: road type (AC/SMA/OGFC), water film depth (mm), friction μ.
+        Panel tint shifts from white (dry) to light blue as water film increases.
+        Requires cv2; no-ops gracefully if unavailable.
+        """
+        try:
+            import cv2
+        except ImportError:
+            return frame
+
+        img_h, img_w = frame.shape[:2]
+        n_ch = frame.shape[2] if frame.ndim >= 3 else 1
+
+        mu = 1.0
+        water_mm = 0.0
+        road_type = "AC"
+        if self._mu_static_per_env is not None and env_idx < len(self._mu_static_per_env):
+            mu = float(self._mu_static_per_env[env_idx].item())
+        if env_idx < len(self._water_film_mm_per_env):
+            water_mm = self._water_film_mm_per_env[env_idx]
+        if env_idx < len(self._road_type_per_env):
+            road_type = self._road_type_per_env[env_idx] or "AC"
+
+        # Panel geometry
+        margin = max(6, img_h // 80)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = max(0.35, img_h / 1400.0)
+        thickness = max(1, int(font_scale * 1.5))
+        line_h = int(font_scale * 28 + 4)
+        lines = [
+            f"Road: {road_type}",
+            f"Rain: {water_mm:.1f} mm",
+            f"Mu:   {mu:.3f}",
+        ]
+        text_w = max(cv2.getTextSize(ln, font, font_scale, thickness)[0][0] for ln in lines)
+        panel_w = text_w + margin * 2
+        panel_h = len(lines) * line_h + margin * 2
+
+        # Panel color: white (dry) → steel blue (wet) based on water_mm
+        wetness = min(1.0, water_mm / 2.0)
+        pr = int(240 - wetness * 80)
+        pg = int(240 - wetness * 60)
+        pb = int(240 + wetness * (255 - 240))
+        pr, pg, pb = min(255, pr), min(255, pg), min(255, pb)
+
+        # Bottom-left position
+        px0 = margin
+        py0 = img_h - margin - panel_h
+
+        overlay = frame.copy()
+        panel_color = (pr, pg, pb) + (255,) * (n_ch - 3) if n_ch > 3 else (pr, pg, pb)
+        cv2.rectangle(overlay, (px0, py0), (px0 + panel_w, py0 + panel_h), panel_color, -1)
+        frame = cv2.addWeighted(overlay, 0.72, frame, 0.28, 0)
+
+        text_color = (20, 20, 20) + (255,) * (n_ch - 3) if n_ch > 3 else (20, 20, 20)
+        for i, line in enumerate(lines):
+            ty = py0 + margin + (i + 1) * line_h - 4
+            cv2.putText(frame, line, (px0 + margin, ty), font, font_scale, text_color, thickness, cv2.LINE_AA)
+
+        return frame
+
+    def capture_composite_frame(self) -> np.ndarray | None:
+        """Capture and stitch per-env frames into a single composite image.
+
+        Each panel is annotated with the weather HUD (if enabled) and vehicle overlays.
+        Panels are tiled in a grid with `capture_camera_composite_cols` columns.
+        Returns None if no composite cameras are configured.
+        """
+        if not self._capture_cameras_per_env or not self._composite_env_indices:
+            return None
+
+        # Parse labels
+        labels_raw = str(getattr(self.cfg, "capture_camera_composite_labels", "")).strip()
+        labels = [l.strip() for l in labels_raw.split(",")] if labels_raw else []
+        n_cols = max(1, int(getattr(self.cfg, "capture_camera_composite_cols", 2)))
+        hud_enabled = bool(getattr(self.cfg, "capture_camera_hud_enabled", False))
+        proxy_enabled = bool(self.cfg.vehicle_proxy_marker_enable) and bool(self.cfg.vehicle_proxy_marker_2d_overlay)
+
+        try:
+            import cv2
+            _has_cv2 = True
+        except ImportError:
+            _has_cv2 = False
+
+        self._update_vehicle_proxy_markers()
+        self._update_trajectory_trail()
+
+        sub_frames: list[np.ndarray] = []
+        for cam_slot, (cam, actual_ei) in enumerate(zip(self._capture_cameras_per_env, self._composite_env_indices)):
+            cam.update(self.step_dt)
+            rgb = cam.data.output.get("rgb")
+            if rgb is None or rgb.numel() == 0:
+                continue
+            sub = rgb[0].detach().cpu().numpy().copy()
+
+            # Per-env 2D overlays using this camera's projection bounds
+            if cam_slot < len(self._capture_cam_center_xy_per_env) and self._capture_cam_center_xy_per_env:
+                cxy = self._capture_cam_center_xy_per_env[cam_slot]
+                chw = self._capture_cam_half_w_per_env[cam_slot] if cam_slot < len(self._capture_cam_half_w_per_env) else 1.0
+                chh = self._capture_cam_half_h_per_env[cam_slot] if cam_slot < len(self._capture_cam_half_h_per_env) else 1.0
+                if proxy_enabled or hud_enabled:
+                    sub = self._overlay_vehicle_proxy_markers_2d(sub, env_idx=actual_ei, cam_center_xy=cxy, cam_half_w=chw, cam_half_h=chh)
+            if hud_enabled and bool(getattr(self.cfg, "capture_camera_hud_weather_panel", True)):
+                sub = self._overlay_weather_hud(sub, actual_ei)
+
+            # Draw panel label (top-center)
+            label = labels[cam_slot] if cam_slot < len(labels) else f"env {actual_ei}"
+            if _has_cv2 and label:
+                import cv2
+                fh, fw = sub.shape[:2]
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                fs = max(0.4, fw / 900.0)
+                th = max(1, int(fs * 2))
+                (tw, t_h), _ = cv2.getTextSize(label, font, fs, th)
+                tx = max(0, (fw - tw) // 2)
+                ty = max(t_h + 4, int(fh * 0.05))
+                cv2.putText(sub, label, (tx + 1, ty + 1), font, fs, (0, 0, 0), th + 1, cv2.LINE_AA)
+                cv2.putText(sub, label, (tx, ty), font, fs, (255, 255, 255), th, cv2.LINE_AA)
+
+            sub_frames.append(sub)
+
+        if not sub_frames:
+            return None
+
+        # Normalize all sub-frames to same size
+        ref_h, ref_w = sub_frames[0].shape[:2]
+        normalized = []
+        for sf in sub_frames:
+            if sf.shape[:2] != (ref_h, ref_w):
+                if _has_cv2:
+                    sf = cv2.resize(sf, (ref_w, ref_h))
+            normalized.append(sf)
+
+        # Tile into grid
+        n_rows = math.ceil(len(normalized) / n_cols)
+        rows = []
+        for r in range(n_rows):
+            row_frames = normalized[r * n_cols: (r + 1) * n_cols]
+            while len(row_frames) < n_cols:
+                row_frames.append(np.zeros_like(normalized[0]))
+            rows.append(np.concatenate(row_frames, axis=1))
+        return np.concatenate(rows, axis=0)
 
     def _build_scene_factory_world(self, stage, *, world_root: str, env_index: int = 0) -> None:
         scene_factory_cfg = _load_yaml(self.cfg.scene_factory_config_path)
@@ -1830,6 +2662,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             cfg=build_cfg,
             json_path=scene_json_path,
             world_root=world_root,
+            video_cone_markers=bool(getattr(self.cfg, "video_cone_markers", False)),
         )
         self._build_scene_factory_visual_floor(stage, world_root=world_root)
 
@@ -1846,6 +2679,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._lane_touch_half_lengths_m = torch.zeros((self.num_envs, 0), dtype=torch.float32, device=self.device)
             self._lane_touch_half_widths_m = torch.zeros((self.num_envs, 0), dtype=torch.float32, device=self.device)
             self._lane_touch_types = torch.zeros((self.num_envs, 0), dtype=torch.long, device=self.device)
+            self._lane_touch_ids = torch.zeros((self.num_envs, 0), dtype=torch.long, device=self.device)
             self._lane_touch_valid = torch.zeros((self.num_envs, 0), dtype=torch.bool, device=self.device)
             self._lane_touch_type_one_hot = torch.zeros((self.num_envs, 0, 1), dtype=torch.bool, device=self.device)
             self._lane_touch_type_dim = 1
@@ -1857,12 +2691,18 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         half_lengths_by_env: list[np.ndarray] = []
         half_widths_by_env: list[np.ndarray] = []
         types_by_env: list[np.ndarray] = []
+        ids_by_env: list[np.ndarray] = []
         max_segments = 0
         max_type = 0
         for env_index in range(int(self.cfg.scene.num_envs)):
             world_root = f"/World/envs/env_{env_index}/SceneFactoryWorlds/world_000"
             points_xy, dirs_xy, half_lengths_m, half_widths_m, types = _load_scene_factory_lane_touch_metadata(
                 stage, world_root=world_root
+            )
+            ids_by_env.append(
+                _load_scene_factory_lane_touch_ids(
+                    stage, world_root=world_root, n_points=int(points_xy.shape[0])
+                )
             )
             points_by_env.append(points_xy)
             dirs_by_env.append(dirs_xy)
@@ -1887,6 +2727,10 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             (self.num_envs, max_segments), dtype=torch.float32, device=self.device
         )
         self._lane_touch_types = torch.zeros((self.num_envs, max_segments), dtype=torch.long, device=self.device)
+        # -1 = lane identity unknown (padding, or a stage built before ids existed)
+        self._lane_touch_ids = torch.full(
+            (self.num_envs, max_segments), -1, dtype=torch.long, device=self.device
+        )
         self._lane_touch_valid = torch.zeros((self.num_envs, max_segments), dtype=torch.bool, device=self.device)
         for env_index in range(int(self.cfg.scene.num_envs)):
             segment_count = int(points_by_env[env_index].shape[0])
@@ -1908,7 +2752,20 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._lane_touch_types[env_index, env_slice] = torch.as_tensor(
                 types_by_env[env_index], dtype=torch.long, device=self.device
             )
+            self._lane_touch_ids[env_index, env_slice] = torch.as_tensor(
+                ids_by_env[env_index], dtype=torch.long, device=self.device
+            )
             self._lane_touch_valid[env_index, env_slice] = True
+        host_np = getattr(self, "_agent_host_polyline_id_np", None)
+        if host_np is not None:
+            # numpy is [num_envs, num_agents]; the driver wants [A, E]
+            self._agent_host_polyline_id = torch.as_tensor(
+                host_np.T.copy(), dtype=torch.long, device=self.device
+            )
+        else:
+            self._agent_host_polyline_id = torch.full(
+                (agent_count, self.num_envs), -1, dtype=torch.long, device=self.device
+            )
         self._lane_touch_type_one_hot = torch.nn.functional.one_hot(
             self._lane_touch_types.clamp(min=0),
             num_classes=int(self._lane_touch_type_dim),
@@ -1919,6 +2776,131 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             dtype=torch.bool,
             device=self.device,
         )
+
+        # --- Workzone cone tensor init ---
+        cones_by_env: list[np.ndarray] = []
+        speed_limits_by_env: list[float] = []
+        max_cones = 0
+        for env_index in range(int(self.cfg.scene.num_envs)):
+            world_root = f"/World/envs/env_{env_index}/SceneFactoryWorlds/world_000"
+            cone_xy, speed_limit = _load_workzone_cone_metadata(stage, world_root=world_root)
+            cones_by_env.append(cone_xy)
+            speed_limits_by_env.append(speed_limit)
+            max_cones = max(max_cones, int(cone_xy.shape[0]))
+
+        if max_cones > 0:
+            self._cone_positions_xy_m = torch.zeros(
+                (self.num_envs, max_cones, 2), dtype=torch.float32, device=self.device
+            )
+            self._cone_positions_valid = torch.zeros(
+                (self.num_envs, max_cones), dtype=torch.bool, device=self.device
+            )
+            for env_index in range(int(self.cfg.scene.num_envs)):
+                n = int(cones_by_env[env_index].shape[0])
+                if n > 0:
+                    self._cone_positions_xy_m[env_index, :n] = torch.as_tensor(
+                        cones_by_env[env_index], dtype=torch.float32, device=self.device
+                    )
+                    self._cone_positions_valid[env_index, :n] = True
+            print(
+                f"[INFO][WorkzoneCones] Loaded up to {max_cones} cones per env "
+                f"across {self.num_envs} envs.",
+                flush=True,
+            )
+
+            # Inject cones into the road-point observation pool so _build_reference_road_context
+            # sees them as regular points with type=_CONE_POINT_TYPE (10). This means agents
+            # observe cones in the same 350-point budget as road geometry — no separate obs needed.
+            old_n = self._lane_touch_points_xy_m.shape[1]
+            new_n = old_n + max_cones
+            pad_xy  = torch.zeros((self.num_envs, max_cones, 2), dtype=torch.float32, device=self.device)
+            pad_dir = torch.zeros((self.num_envs, max_cones, 2), dtype=torch.float32, device=self.device)
+            pad_hl  = torch.zeros((self.num_envs, max_cones), dtype=torch.float32, device=self.device)
+            pad_hw  = torch.zeros((self.num_envs, max_cones), dtype=torch.float32, device=self.device)
+            pad_type = torch.full((self.num_envs, max_cones), _CONE_POINT_TYPE, dtype=torch.long, device=self.device)
+            pad_valid = torch.zeros((self.num_envs, max_cones), dtype=torch.bool, device=self.device)
+            for env_index in range(int(self.cfg.scene.num_envs)):
+                n = int(cones_by_env[env_index].shape[0])
+                if n > 0:
+                    pad_xy[env_index, :n] = self._cone_positions_xy_m[env_index, :n]
+                    pad_valid[env_index, :n] = True
+            self._lane_touch_points_xy_m = torch.cat([self._lane_touch_points_xy_m, pad_xy], dim=1)
+            self._lane_touch_dirs_xy     = torch.cat([self._lane_touch_dirs_xy, pad_dir], dim=1)
+            self._lane_touch_half_lengths_m = torch.cat([self._lane_touch_half_lengths_m, pad_hl], dim=1)
+            self._lane_touch_half_widths_m  = torch.cat([self._lane_touch_half_widths_m, pad_hw], dim=1)
+            self._lane_touch_types       = torch.cat([self._lane_touch_types, pad_type], dim=1)
+            self._lane_touch_ids         = torch.cat(
+                [self._lane_touch_ids, torch.full_like(pad_type, -1)], dim=1
+            )
+            self._lane_touch_valid       = torch.cat([self._lane_touch_valid, pad_valid], dim=1)
+            # Rebuild type metadata to include the new cone type
+            self._lane_touch_type_dim = max(int(self._lane_touch_type_dim), _CONE_POINT_TYPE + 1)
+            self._lane_touch_type_one_hot = torch.nn.functional.one_hot(
+                self._lane_touch_types.clamp(min=0),
+                num_classes=int(self._lane_touch_type_dim),
+            ).to(dtype=torch.bool)
+            self._lane_touch_type_one_hot &= self._lane_touch_valid.unsqueeze(-1)
+            self._lane_touch_mask = torch.zeros(
+                (agent_count, self.num_envs, int(self._lane_touch_type_dim)),
+                dtype=torch.bool,
+                device=self.device,
+            )
+            print(
+                f"[INFO][WorkzoneCones] Injected cones into road-point pool: "
+                f"{old_n} road pts + {max_cones} cone slots = {new_n} total.",
+                flush=True,
+            )
+        else:
+            self._cone_positions_xy_m = torch.zeros(
+                (self.num_envs, 0, 2), dtype=torch.float32, device=self.device
+            )
+            self._cone_positions_valid = torch.zeros(
+                (self.num_envs, 0), dtype=torch.bool, device=self.device
+            )
+
+        self._cone_speed_limit_mps = torch.tensor(
+            speed_limits_by_env, dtype=torch.float32, device=self.device
+        )
+
+        # --- Workzone forbidden boxes tensor init ---
+        from pxr import UsdGeom as _UsdGeom
+        _mpu = float(_UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
+        if not math.isfinite(_mpu) or _mpu <= 0.0:
+            _mpu = 1.0
+        boxes_by_env: list[np.ndarray] = []
+        max_boxes = 0
+        for env_index in range(int(self.cfg.scene.num_envs)):
+            world_root = f"/World/envs/env_{env_index}/SceneFactoryWorlds/world_000"
+            boxes_np = _load_workzone_forbidden_boxes(stage, world_root, _mpu)
+            boxes_by_env.append(boxes_np)
+            max_boxes = max(max_boxes, int(boxes_np.shape[0]))
+
+        if max_boxes > 0:
+            self._forbidden_boxes_m = torch.zeros(
+                (self.num_envs, max_boxes, 5), dtype=torch.float32, device=self.device
+            )
+            self._forbidden_boxes_count = torch.zeros(
+                (self.num_envs,), dtype=torch.long, device=self.device
+            )
+            for env_index in range(int(self.cfg.scene.num_envs)):
+                n = int(boxes_by_env[env_index].shape[0])
+                if n > 0:
+                    self._forbidden_boxes_m[env_index, :n] = torch.as_tensor(
+                        boxes_by_env[env_index], dtype=torch.float32, device=self.device
+                    )
+                    self._forbidden_boxes_count[env_index] = n
+            print(
+                f"[INFO][WorkzoneBoxes] Loaded up to {max_boxes} forbidden boxes per env "
+                f"across {self.num_envs} envs.",
+                flush=True,
+            )
+        else:
+            self._forbidden_boxes_m = torch.zeros(
+                (self.num_envs, 0, 5), dtype=torch.float32, device=self.device
+            )
+            self._forbidden_boxes_count = torch.zeros(
+                (self.num_envs,), dtype=torch.long, device=self.device
+            )
 
     def _update_lane_touch_mask(self) -> None:
         if bool(self._lane_touch_mask_cache_valid):
@@ -2001,6 +2983,81 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         return torch.any(self._lane_touch_mask[agent_idx, :, valid_types], dim=1)
 
+    @staticmethod
+    def _resolve_multilane_density_for_env(density_cfg, env_id: int) -> float:
+        """Resolve the per-env multilane density in [0, 1].
+
+        ``density_cfg`` is either a scalar (broadcast to all envs) or a per-env
+        ``list``/``tuple``/1-D tensor indexed by ``env_id`` (a shorter sequence
+        reuses its last value). This is the single hook that turns the per-env
+        density VECTOR into a scalar for one env; today the optimizer fills every
+        entry with one value, but per-env randomization is a fill change here, not
+        a re-plumb of the call site.
+        """
+        d = density_cfg
+        if isinstance(d, torch.Tensor):
+            d = d.flatten().tolist()
+        if isinstance(d, (list, tuple)):
+            if not d:
+                return 1.0
+            idx = env_id if env_id < len(d) else len(d) - 1
+            val = float(d[idx])
+        else:
+            val = float(d)
+        return min(1.0, max(0.0, val))
+
+    def _resolve_multilane_capacity_for_env(
+        self,
+        scene_cfg: dict,
+        env_id: int,
+        *,
+        spawn_spacing_m: float,
+        bounds_size_m: float,
+        config_fallback: int,
+    ) -> int:
+        """Per-map traffic capacity for one env's scene (cached, computed once).
+
+        Resolution order: (1) the ``capacity`` baked into that scene's workzone box
+        by the generator/validator; (2) the geometric fallback
+        ``compute_multilane_capacity`` (same 8 m spacing + this env's crop); (3) the
+        ``random_od_multilane_capacity`` config default. Each env keeps its scene for
+        the run's lifetime, so the result is cached by ``env_id``.
+        """
+        cache = getattr(self, "_multilane_capacity_by_env", None)
+        if cache is None:
+            cache = {}
+            self._multilane_capacity_by_env = cache
+        if env_id in cache:
+            return cache[env_id]
+
+        capacity: int | None = None
+        boxes = (scene_cfg.get("workzone", {}) or {}).get("forbidden_boxes", []) or []
+        if boxes:
+            raw = boxes[0].get("capacity", None)
+            if raw is not None:
+                try:
+                    capacity = int(raw)
+                except (TypeError, ValueError):
+                    capacity = None
+        if capacity is None or capacity <= 0:
+            from src.trfc.lane_center_sampler import compute_multilane_capacity
+
+            try:
+                computed = int(
+                    compute_multilane_capacity(
+                        scene_cfg,
+                        spawn_spacing_m=float(spawn_spacing_m),
+                        bounds_size_m=float(bounds_size_m),
+                    )["capacity"]
+                )
+            except Exception:
+                computed = 0
+            capacity = computed if computed > 0 else int(config_fallback)
+
+        capacity = max(1, int(capacity))
+        cache[env_id] = capacity
+        return capacity
+
     def _resample_random_od_for_envs(self, env_ids: torch.Tensor) -> None:
         """Resample OD pairs on lane centerlines for the given env indices.
 
@@ -2008,7 +3065,11 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         ``_scene_factory_spawn_goal_local``, and ``_scene_factory_spawn_valid`` for all agents
         in the specified environments.
         """
-        from src.trfc import sample_lane_center_start_goal_pairs
+        from src.trfc import (
+            sample_lane_center_start_goal_pairs,
+            sample_multilane_merge_start_goal_pairs,
+            sample_workzone_start_goal_pairs,
+        )
         from src.trfc.lane_center_sampler import compute_scene_center_from_road
 
         num_agents = max(1, int(self.cfg.num_agents_per_env))
@@ -2016,31 +3077,147 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         min_travel = float(self.cfg.random_od_min_travel_m)
         max_travel = float(self.cfg.random_od_max_travel_m)
         lane_types = tuple(int(t) for t in self.cfg.random_od_lane_types)
+        mode = str(getattr(self.cfg, "random_od_mode", "lane"))
         env_ids_cpu = env_ids.cpu().tolist() if isinstance(env_ids, torch.Tensor) else list(env_ids)
 
+        # Density knob (multilane_merge only): capacity is now PER-MAP, derived
+        # from the scene's upstream holding length (baked into the workzone box, or
+        # computed as a fallback). `random_od_multilane_capacity` is only the last-
+        # resort default for a scene with no derivable capacity. A per-env density
+        # in [0,1] sets how many of that env's capacity actually spawn (rest park).
+        multilane_capacity_fallback = max(
+            1, int(getattr(self.cfg, "random_od_multilane_capacity", num_agents))
+        )
+        multilane_density_cfg = getattr(self.cfg, "random_od_multilane_density", 1.0)
+        multilane_spawn_spacing_m = float(
+            getattr(self.cfg, "random_od_workzone_spawn_spacing_m", 8.0)
+        )
+
+        fixed_seed = int(getattr(self.cfg, "random_od_fixed_seed", -1))
         for env_id in env_ids_cpu:
             scene_cfg = self._scene_factory_scene_cfgs_by_env[int(env_id)]
-            seed = int(self._random_od_rng.integers(0, 2**31))
-            try:
-                samples = sample_lane_center_start_goal_pairs(
-                    scene_cfg,
-                    num_agents=num_agents,
-                    bounds_size_m=bounds_size_m,
-                    origin_mode="center",
-                    lane_types=lane_types,
-                    min_travel_distance_m=min_travel,
-                    max_travel_distance_m=max_travel,
-                    seed=seed,
+            # Clear this env's additive START-lane record (audit-only). Rewritten
+            # per spawned agent below; stays -1 for unspawned slots and on any
+            # sampler failure (the `continue` branch).
+            if getattr(self, "_agent_spawn_polyline_id", None) is not None:
+                self._agent_spawn_polyline_id[int(env_id), :] = -1
+            # Deterministic traffic when random_od_fixed_seed >= 0: identical
+            # convoy every reset (and every env, for a single-scene pool) so the
+            # optimizer compares tapers against the same traffic.
+            seed = fixed_seed if fixed_seed >= 0 else int(self._random_od_rng.integers(0, 2**31))
+            if getattr(self.cfg, "random_od_debug", False) and int(env_id) == 0:
+                print(
+                    f"[OD-debug] reset env0 mode={mode} od_seed={seed} "
+                    f"(fixed_seed_cfg={fixed_seed}; <0 => resampled per episode)",
+                    flush=True,
                 )
-            except RuntimeError:
-                # If sampling fails (e.g. not enough viable lanes), keep existing OD.
+            try:
+                if mode == "workzone":
+                    samples = sample_workzone_start_goal_pairs(
+                        scene_cfg,
+                        num_agents=num_agents,
+                        bounds_size_m=bounds_size_m,
+                        origin_mode="center",
+                        approach_gap_m=float(self.cfg.random_od_workzone_approach_gap_m),
+                        spawn_spacing_m=float(self.cfg.random_od_workzone_spawn_spacing_m),
+                        goal_clearance_m=float(self.cfg.random_od_workzone_goal_clearance_m),
+                        open_lane_count=int(self.cfg.random_od_workzone_open_lane_count),
+                        open_lane_offset_m=float(self.cfg.random_od_workzone_open_lane_offset_m),
+                        open_lane_stagger_m=float(self.cfg.random_od_workzone_open_lane_stagger_m),
+                        merge_goal_lane_offset_m=self.cfg.random_od_workzone_merge_goal_lane_offset_m,
+                        seed=seed,
+                    )
+                elif mode == "multilane_merge":
+                    # Per-env spawned count from the density knob: N = max(1,
+                    # ceil(capacity_e * density_e)), capped at the articulation
+                    # budget num_agents. capacity_e is this env's PER-MAP capacity
+                    # (baked box value, else geometric fallback). The remaining
+                    # capacity-N slots park (denominator-safe via _spawned_agent_mask).
+                    capacity_e = self._resolve_multilane_capacity_for_env(
+                        scene_cfg,
+                        int(env_id),
+                        spawn_spacing_m=multilane_spawn_spacing_m,
+                        bounds_size_m=bounds_size_m,
+                        config_fallback=multilane_capacity_fallback,
+                    )
+                    # Density: fixed per-env knob, OR resampled each reset from a
+                    # configured Uniform(lo, hi). The draw is seeded by this env's OD
+                    # `seed`, so it varies per env/episode in resampling mode yet is
+                    # reproducible with --seed and constant under a fixed seed.
+                    density_range = getattr(self.cfg, "random_od_multilane_density_range", None)
+                    if density_range is not None:
+                        _dlo, _dhi = float(density_range[0]), float(density_range[1])
+                        density_e = float(np.random.default_rng(seed).uniform(_dlo, _dhi))
+                    else:
+                        density_e = self._resolve_multilane_density_for_env(
+                            multilane_density_cfg, int(env_id)
+                        )
+                    n_env = min(num_agents, max(1, math.ceil(capacity_e * density_e)))
+                    samples = sample_multilane_merge_start_goal_pairs(
+                        scene_cfg,
+                        num_agents=n_env,
+                        bounds_size_m=bounds_size_m,
+                        approach_gap_m=float(self.cfg.random_od_workzone_approach_gap_m),
+                        spawn_spacing_m=float(self.cfg.random_od_workzone_spawn_spacing_m),
+                        goal_clearance_m=float(self.cfg.random_od_workzone_goal_clearance_m),
+                        return_goal_clearance_m=float(self.cfg.random_od_multilane_return_goal_clearance_m),
+                        merge_return_frac=float(self.cfg.random_od_merge_return_frac),
+                        lane_distribution_mode="uniform",
+                        seed=seed,
+                    )
+                else:
+                    samples = sample_lane_center_start_goal_pairs(
+                        scene_cfg,
+                        num_agents=num_agents,
+                        bounds_size_m=bounds_size_m,
+                        origin_mode="center",
+                        lane_types=lane_types,
+                        min_travel_distance_m=min_travel,
+                        max_travel_distance_m=max_travel,
+                        seed=seed,
+                    )
+            except RuntimeError as exc:
+                # Do NOT silently swallow: a sampler failure means agents keep their
+                # (often invalid) default spawns and the run trains on garbage. Warn
+                # loudly, once per unique (mode, message). For random_od_mode=
+                # 'multilane_merge' this usually means the scene lacks the merge
+                # contract (closed_lane_id/open_lane_ids) — i.e. it was NOT generated
+                # with `--mode multilane`.
+                warned = getattr(self, "_od_resample_warned", None)
+                if warned is None:
+                    warned = set()
+                    self._od_resample_warned = warned
+                key = f"{mode}:{exc}"
+                if key not in warned:
+                    warned.add(key)
+                    print(
+                        f"[WARNING][SceneFactory] OD resample FAILED (random_od_mode='{mode}', "
+                        f"env {env_id}): {exc}. Agents keep default spawns for this env — the run "
+                        f"will train on invalid data. For 'multilane_merge', ensure the scene was "
+                        f"generated with `--mode multilane` (needs the closed_lane_id/open_lane_ids "
+                        f"merge contract).",
+                        flush=True,
+                    )
                 continue
             # sample_lane_center_start_goal_pairs returns coordinates in the raw
             # scene JSON frame.  _scene_factory_spawn_start_local must be in the
             # scene-center-relative "local" frame (the same frame used by the
             # road builder), so subtract the scene center.
             scene_center = compute_scene_center_from_road(scene_cfg)
+            # Map sample.polyline_idx (ENUM index into road.polylines) → JSON `id`
+            # so the audit can compare against the merge contract's closed/open
+            # lane ids, which are JSON ids (the two frames differ; see
+            # _build_host_lane_polyline).
+            _polylines = (scene_cfg.get("road", {}) or {}).get("polylines", []) or []
             for agent_idx, sample in enumerate(samples[:num_agents]):
+                if getattr(self, "_agent_spawn_polyline_id", None) is not None:
+                    _pidx = int(sample.polyline_idx)
+                    _pid = (
+                        _polylines[_pidx].get("id", _pidx)
+                        if 0 <= _pidx < len(_polylines)
+                        else _pidx
+                    )
+                    self._agent_spawn_polyline_id[int(env_id), agent_idx] = int(_pid)
                 self._scene_factory_spawn_start_local[env_id, agent_idx, 0] = float(sample.start_xyz[0]) - float(scene_center[0])
                 self._scene_factory_spawn_start_local[env_id, agent_idx, 1] = float(sample.start_xyz[1]) - float(scene_center[1])
                 self._scene_factory_spawn_start_local[env_id, agent_idx, 2] = float(sample.start_xyz[2]) - float(scene_center[2])
@@ -2108,8 +3285,185 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
     def _reset_mode_name(self) -> str:
         return str(getattr(self.cfg, "reset_mode", "isaac_reset")).strip().lower().replace("-", "_")
 
+    def _apply_per_env_ground_friction(self) -> None:
+        """Set ground cuboid friction per-env from weather friction estimates.
+
+        Each env owns its own ground cuboid (spawned in env_0, cloned by
+        scene.clone_environments).  We obtain a RigidBodyView spanning all
+        ground prims and write per-env static/dynamic friction directly into
+        PhysX via set_material_properties — no wheel-material trick needed.
+
+        The ground material keeps friction_combine_mode="min"; the global sim
+        physics material supplies static_friction=1.0 as the wheel default, so
+        min(ground_μ, 1.0) = ground_μ for any μ ≤ 1.0.
+
+        In **friction_ruler_mode**, μ values come directly from the config
+        (``friction_ruler_mu_values``) instead of Zhao estimates.
+        """
+        # ── Build per-env mu lists (identical logic to old tire-friction fn) ──
+        if bool(self.cfg.friction_ruler_mode):
+            mu_values = self._friction_ruler_mu_values()
+            mu_static_per_env = [max(1e-3, v) for v in mu_values[:self.num_envs]]
+            mu_dynamic_per_env = [0.8 * s for s in mu_static_per_env]
+            self._water_film_mm_per_env = [0.0] * self.num_envs
+            self._road_type_per_env = ["AC"] * self.num_envs
+        else:
+            specs = getattr(self, "_scene_factory_specs_by_env", None)
+            if not specs:
+                return
+            estimates = [getattr(s, "friction_estimate", None) for s in specs]
+            if all(e is None for e in estimates):
+                return
+            DEFAULT_MU = 2.0
+            mu_static_per_env = []
+            mu_dynamic_per_env = []
+            any_finite = False
+            for est in estimates:
+                if est is None:
+                    mu_static_per_env.append(DEFAULT_MU)
+                    mu_dynamic_per_env.append(DEFAULT_MU)
+                else:
+                    s = max(1.0e-3, float(est.mu_static))
+                    d = min(s, max(1.0e-3, float(est.mu_dynamic)))
+                    mu_static_per_env.append(s)
+                    mu_dynamic_per_env.append(d)
+                    if s < DEFAULT_MU - 0.01:
+                        any_finite = True
+            if not any_finite:
+                return
+            self._water_film_mm_per_env = [
+                float(getattr(est, "water_film_mm", 0.0)) if est is not None else 0.0
+                for est in estimates
+            ]
+            self._road_type_per_env = [
+                str(getattr(est, "road_type", "AC")) if est is not None else "AC"
+                for est in estimates
+            ]
+
+        mu_s_t = torch.tensor(mu_static_per_env, dtype=torch.float32)
+        mu_d_t = torch.tensor(mu_dynamic_per_env, dtype=torch.float32)
+        self._mu_static_per_env = mu_s_t.clone()
+
+        # ── Create a RigidBodyView for all ground cuboids ──
+        # env_prim_paths[0] is e.g. "/World/envs/env_0"; parent is "/World/envs"
+        env_root = self.scene.env_prim_paths[0].rsplit("/", 1)[0]
+        ground_glob = f"{env_root}/env_*/Ground"
+
+        from isaacsim.core.simulation_manager import SimulationManager
+        psv = SimulationManager.get_physics_sim_view()
+        ground_view = psv.create_rigid_body_view(ground_glob)
+
+        # material_properties shape: (num_envs, max_shapes, 3)
+        #   [:, :, 0] = static_friction
+        #   [:, :, 1] = dynamic_friction
+        #   [:, :, 2] = restitution
+        materials = ground_view.get_material_properties()
+        materials[:, :, 0] = mu_s_t.unsqueeze(1)
+        materials[:, :, 1] = mu_d_t.unsqueeze(1)
+
+        all_env_ids = torch.arange(self.num_envs, dtype=torch.int32)
+        ground_view.set_material_properties(materials, all_env_ids)
+
+        # ── Read-back verification ──
+        readback = ground_view.get_material_properties()
+        for env_i in range(min(self.num_envs, 8)):
+            print(
+                f"  [VERIFY] env={env_i}  ground  "
+                f"μ_static_SET={mu_static_per_env[env_i]:.4f}  μ_static_READ={readback[env_i, 0, 0].item():.4f}  "
+                f"μ_dynamic_SET={mu_dynamic_per_env[env_i]:.4f}  μ_dynamic_READ={readback[env_i, 0, 1].item():.4f}",
+                flush=True,
+            )
+
+        unique_mu = sorted(set(f"{s:.4f}" for s in mu_static_per_env))
+        print(
+            f"[INFO][SceneFactory] Applied per-env ground friction to {self.num_envs} cuboids. "
+            f"Unique μ_static values: {unique_mu or ['(all dry)']}.",
+            flush=True,
+        )
+
+    def _apply_uniform_wheel_friction_cap(self) -> None:
+        """Raise the wheel-side friction ceiling so it stops clipping ground μ.
+
+        ``friction_combine_mode="min"`` means the contact μ is
+        ``min(ground_μ, wheel_μ)``.  The wheel material is baked into the vehicle
+        USD at static=dynamic=1.0 (src/procedural_student_vehicle_import.py:181)
+        and the sim default material agrees (:625-631), so every ground μ above
+        1.0 is silently clipped -- a dry AC world estimated at μ=1.105 is
+        simulated at 1.000, and in a weather pool the worlds whose μ still
+        exceeds 1.0 become indistinguishable from bone dry even though their
+        weather token reports rain.
+
+        This writes a UNIFORM ceiling to the wheel shapes at runtime, so the
+        ground keeps sole ownership of the per-env variation and ``min`` simply
+        stops interfering below the cap.  Doing it here rather than in the USD
+        avoids regenerating the vehicle asset (unchanged since 2026-05-06) and
+        keeps the change reversible from config.
+
+        No-op at the default 1.0, which is exactly the value already baked into
+        the asset -- so runs that do not set ``wheel_friction_cap`` are bit-identical
+        to before this method existed.
+        """
+        cap = float(getattr(self.cfg, "wheel_friction_cap", 1.0))
+        if abs(cap - 1.0) < 1e-6:
+            return  # matches the baked asset value; nothing to do
+        if cap <= 0.0:
+            raise ValueError(f"wheel_friction_cap must be > 0, got {cap}")
+
+        wheel_body_names = [
+            "front_left_wheel_link", "front_right_wheel_link",
+            "rear_left_wheel_link", "rear_right_wheel_link",
+        ]
+        modified_slots = 0
+        for vehicle in self._vehicles:
+            view = vehicle.root_physx_view
+            wheel_body_ids, _ = vehicle.find_bodies(wheel_body_names)
+            if not wheel_body_ids:
+                continue
+
+            # shape indices are laid out body-major; recover each body's slice
+            num_shapes_per_body = []
+            for link_path in view.link_paths[0]:
+                link_view = vehicle._physics_sim_view.create_rigid_body_view(link_path)
+                num_shapes_per_body.append(link_view.max_shapes)
+
+            # material_properties: (num_envs, max_shapes, 3) = static, dynamic, restitution
+            materials = view.get_material_properties()
+            for bid in wheel_body_ids:
+                start = sum(num_shapes_per_body[:bid])
+                end = start + num_shapes_per_body[bid]
+                materials[:, start:end, 0] = cap
+                materials[:, start:end, 1] = cap
+            view.set_material_properties(materials, torch.arange(self.num_envs, dtype=torch.int32))
+            modified_slots += 1
+
+            # Read-back verification, mirroring _apply_per_env_ground_friction.
+            # A silent no-op here would look exactly like "weather has no effect",
+            # so prove the write landed rather than assuming it.
+            if modified_slots == 1:
+                readback = view.get_material_properties()
+                first_bid = wheel_body_ids[0]
+                idx = sum(num_shapes_per_body[:first_bid])
+                got = readback[0, idx, 0].item()
+                print(
+                    f"  [VERIFY] wheel cap SET={cap:.4f}  READ={got:.4f}"
+                    f"{'' if abs(got - cap) < 1e-3 else '   <-- MISMATCH, cap did NOT apply'}",
+                    flush=True,
+                )
+
+        print(
+            f"[INFO][SceneFactory] Raised wheel friction cap to {cap:.4f} on "
+            f"{modified_slots} vehicle slots (was 1.0 baked in the USD). "
+            f"Contact μ is now min(ground_μ, {cap:.4f}).",
+            flush=True,
+        )
+
     def _apply_per_env_tire_friction(self) -> None:
         """Set wheel contact-shape friction per-env from weather friction estimates.
+
+        .. deprecated::
+            Superseded by :meth:`_apply_per_env_ground_friction`, which writes
+            friction directly to each env's ground cuboid material rather than
+            the wheel shapes.  Kept for reference only; not called.
 
         Because every env shares a single PhysX ground plane whose material
         cannot vary per-env, we instead set the **wheel** collision-shape
@@ -2279,9 +3633,78 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         except Exception:
             pass
 
+    def _hide_source_vehicle(self, stage) -> None:
+        """Hide env_0's vehicle prims (USD source template, static at world origin) and
+        restore visibility on the real simulation envs (env_1..N-1).
+
+        clone_environments(copy_from_source=False) uses USD inherit: env_1..N-1 inherit
+        their prim structure from env_0.  This has two consequences:
+          1. Hiding env_0/Vehicle_X propagates invisibility to all clones.
+          2. The clone prims (env_1/Vehicle_X, etc.) may not exist as explicit stage nodes —
+             stage.GetPrimAtPath() returns Invalid for them, silently skipping MakeVisible.
+
+        Fix: use stage.OverridePrim() to force-create an override opinion at each clone path
+        so that MakeVisible() can author a visibility attribute that wins over the inherit.
+
+        With num_envs=1 there are no clones: env_0 IS the only real simulation env and must
+        not be hidden (the restore loop would be empty, leaving all vehicles invisible).
+        """
+        if self.num_envs <= 1:
+            return
+        from pxr import UsdGeom
+        for agent_idx in range(len(self._agent_ids)):
+            vpath = f"/World/envs/env_0/Vehicle_{agent_idx}"
+            root = stage.GetPrimAtPath(vpath)
+            if not root.IsValid():
+                continue
+            try:
+                UsdGeom.Imageable(root).MakeInvisible()
+            except Exception:
+                pass
+
+        for env_idx in range(1, self.num_envs):
+            for agent_idx in range(len(self._agent_ids)):
+                vpath = f"/World/envs/env_{env_idx}/Vehicle_{agent_idx}"
+                clone_root = stage.GetPrimAtPath(vpath)
+                if not clone_root.IsValid():
+                    # Prim is implied by USD inherit, not explicitly authored.
+                    # OverridePrim creates a stage opinion at this path so we can
+                    # set a visibility attribute that overrides the inherited invisible.
+                    clone_root = stage.OverridePrim(vpath)
+                if clone_root.IsValid():
+                    try:
+                        UsdGeom.Imageable(clone_root).MakeVisible()
+                    except Exception:
+                        pass
+
+    def _make_vehicles_visible(self, stage) -> None:
+        """Explicitly MakeVisible on all vehicle root prims.
+
+        Called when proxy markers are disabled so native USD geometry renders.
+        Neutralises any inherited invisible opinion that may have been authored
+        by a prior clone or hide pass.
+        """
+        from pxr import UsdGeom
+        num_envs = self.num_envs
+        count = 0
+        for env_idx in range(num_envs):
+            for agent_idx in range(len(self._agent_ids)):
+                vpath = f"/World/envs/env_{env_idx}/Vehicle_{agent_idx}"
+                root = stage.GetPrimAtPath(vpath)
+                if not root.IsValid():
+                    root = stage.OverridePrim(vpath)
+                if root.IsValid():
+                    try:
+                        UsdGeom.Imageable(root).MakeVisible()
+                        count += 1
+                    except Exception:
+                        pass
+        if count:
+            print(f"[INFO][SceneFactory] Made {count} vehicle prim(s) visible (proxy markers disabled).")
+
     def _hide_vehicle_visuals(self, stage) -> None:
         """Make USD vehicle visual meshes invisible so only proxy markers show."""
-        from pxr import Usd, UsdGeom
+        from pxr import UsdGeom
         num_envs = self.num_envs
         for env_idx in range(num_envs):
             for agent_idx in range(len(self._agent_ids)):
@@ -2289,13 +3712,10 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 root = stage.GetPrimAtPath(vpath)
                 if not root.IsValid():
                     continue
-                for prim in Usd.PrimRange(root):
-                    pp = str(prim.GetPath())
-                    if "/visuals/" in pp:
-                        try:
-                            UsdGeom.Imageable(prim).MakeInvisible()
-                        except Exception:
-                            pass
+                try:
+                    UsdGeom.Imageable(root).MakeInvisible()
+                except Exception:
+                    pass
         print(f"[INFO][FrictionRuler] Hid USD vehicle visual meshes for {num_envs} envs.")
 
     def _hide_road_type_visuals(self, stage, hidden_types: list[int]) -> None:
@@ -2460,9 +3880,47 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             # root_lin_vel_b would give ~0 every step and kill all acceleration.
             speed = self._bicycle_speed_buf[agent_idx]  # (num_envs,)
 
-            # Acceleration from throttle/brake
-            accel = throttle * a_scale - brake * a_scale * 2.0
-            speed_new = (speed + accel * dt).clamp(-v_max, v_max)
+            # Acceleration from throttle; brake handled separately below.
+            #
+            # FIXED 2026-07-27 -- the previous form was
+            #     accel = throttle * a_scale - brake * a_scale * 2.0
+            #     speed_new = (speed + accel * dt).clamp(-v_max, v_max)
+            # which admitted a DEGENERATE SOLUTION that PPO reliably found.
+            #
+            # Because the clamp was SYMMETRIC, `brake` was not a brake: it was a
+            # full-authority REVERSE throttle with TWICE the forward gain
+            # (2*a_scale = 12 m/s^2 vs 6). And nothing penalised using it --
+            # every speed-dependent reward reads ||v_xy|| (a magnitude, e.g.
+            # :5089), goal reward is distance progress, and this function keeps
+            # the yaw quaternion pointing FORWARD while the body translates
+            # backward. So a car reversing at max speed down its lane looked, to
+            # every reward term, exactly like a well-aligned fast driver.
+            #
+            # Measured consequence: bicycle-trained policies emitted
+            # throttle == 0 in 100.0% of steps and drove at the negative clamp
+            # (vx = -4.36 m/s, 98.9% of samples; the v_max=15 run reached
+            # -10.81 m/s, 97.2%). Transferred to PhysX the identical command
+            # vector (throttle 0, brake 1) means zero drive torque plus full
+            # brake, so the vehicle was stationary -- 0.22 m of travel in 20 s,
+            # which is the SR ~1.6% / ep_steps-pinned-at-cap transfer "result".
+            # Remapping throttle := brake with unchanged weights restored motion
+            # (0.22 m -> 74 m), proving the network was commanding a stop rather
+            # than being broken.
+            #
+            # Two changes close the basin:
+            #   1. brake only ever REMOVES speed and cannot push through zero,
+            #      which is what a brake physically does and matches the PhysX
+            #      backend, where brake applies brake torque.
+            #   2. speed is clamped FORWARD-ONLY. The sign-blind rewards make any
+            #      reverse motion indistinguishable from forward progress, so
+            #      leaving reverse reachable (via negative throttle) would leave
+            #      the degenerate basin open. The PhysX policy never reverses
+            #      anyway -- it commands throttle ~0.99 -- so this also brings the
+            #      two backends into closer semantic agreement, which is the
+            #      point for a cross-dynamics transfer comparison.
+            speed_open = speed + throttle * a_scale * dt
+            speed_new = torch.clamp(speed_open - brake * a_scale * 2.0 * dt, min=0.0)
+            speed_new = speed_new.clamp(0.0, v_max)
 
             # Steer angle
             delta = steer * delta_max  # (num_envs,)
@@ -2552,8 +4010,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         joint_effort_targets.zero_()
 
         steer_idx = self._steer_joint_ids_tensor.unsqueeze(1).expand(-1, self.num_envs, -1)
-        drive_idx = self._drive_joint_ids_tensor.unsqueeze(1).expand(-1, self.num_envs, -1)
-        brake_idx = self._brake_joint_ids_tensor.unsqueeze(1).expand(-1, self.num_envs, -1)
+        wheel_idx = self._wheel_joint_ids_tensor.unsqueeze(1).expand(-1, self.num_envs, -1)
 
         steer_target = self._semantic_actions[:, :, 1:2] * self._steer_limit
         steer_pos_error = steer_target - torch.gather(joint_pos_all, 2, steer_idx)
@@ -2583,10 +4040,10 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             / _WHEEL_RADIUS_M
         )  # [num_agents, num_envs] rad/s
 
-        brake_joint_vel = torch.gather(joint_vel_all, 2, brake_idx)
+        wheel_joint_vel = torch.gather(joint_vel_all, 2, wheel_idx)
         brake_sign_memory = torch.stack(self._brake_sign_memory, dim=0)
-        moving_mask = torch.abs(brake_joint_vel) > 1.0e-4
-        current_sign = torch.sign(brake_joint_vel)
+        moving_mask = torch.abs(wheel_joint_vel) > 1.0e-4
+        current_sign = torch.sign(wheel_joint_vel)
         current_sign = torch.where(current_sign == 0.0, brake_sign_memory, current_sign)
         brake_sign_memory = torch.where(moving_mask, current_sign, brake_sign_memory)
         brake_sign = torch.where(moving_mask, current_sign, brake_sign_memory)
@@ -2594,8 +4051,8 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         brake = self._semantic_actions[:, :, 2:3]
         front_brake_effort = brake * float(self._tunable_config.brake_front_torque_nm) * float(self._dry_longitudinal_scale)
         rear_brake_effort = brake * float(self._tunable_config.brake_rear_torque_nm) * float(self._dry_longitudinal_scale)
-        front_idx = brake_idx[:, :, 0:2]
-        rear_idx = brake_idx[:, :, 2:4]
+        front_idx = wheel_idx[:, :, 0:2]
+        rear_idx = wheel_idx[:, :, 2:4]
         front_gather = torch.gather(joint_effort_targets, 2, front_idx)
         rear_gather = torch.gather(joint_effort_targets, 2, rear_idx)
         joint_effort_targets.scatter_(2, front_idx, front_gather - front_brake_effort.expand_as(front_gather) * brake_sign[:, :, 0:2])
@@ -2606,6 +4063,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         external_torques = torch.stack(self._external_torques, dim=0)
         external_forces.zero_()
         external_torques.zero_()
+
         if self.cfg.apply_runtime_external_wrench:
             external_forces[:, :, 0, 1] = (
                 -float(self._tunable_config.lateral_velocity_damping_n_per_mps)
@@ -2631,13 +4089,20 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._sync_timing_device()
             target_submit_start = perf_counter()
             vehicle.set_joint_effort_target(self._joint_effort_targets[agent_idx])
-            # All-wheel velocity tracking (see _wheel_target_omega above).
+            # THIS IS THE DRIVE. All four wheel joints get the same velocity
+            # target (see _wheel_target_omega above); the actuator's damping=50
+            # converts it to effort. The same four joints also carry the brake
+            # EFFORT set above, which is why the two are easy to confuse.
+            #
+            # Nothing drives the vehicle by external force. The external wrench
+            # applied below writes only body-Y (lateral velocity damping) and
+            # body-Z torque (yaw damping) -- there is no longitudinal component.
             _done = self._agent_done_mask[agent_idx]
             _tgt = _wheel_target_omega[agent_idx].clone()
             _tgt[_done] = 0.0
-            _flat_brake_ids = self._brake_joint_ids_tensor[agent_idx].tolist()
-            _tgt_expanded = _tgt.unsqueeze(-1).repeat(1, len(_flat_brake_ids))
-            vehicle.set_joint_velocity_target(_tgt_expanded, joint_ids=_flat_brake_ids)
+            _flat_wheel_ids = self._wheel_joint_ids_tensor[agent_idx].tolist()
+            _tgt_expanded = _tgt.unsqueeze(-1).repeat(1, len(_flat_wheel_ids))
+            vehicle.set_joint_velocity_target(_tgt_expanded, joint_ids=_flat_wheel_ids)
             self._sync_timing_device()
             target_submit_ms += (perf_counter() - target_submit_start) * 1000.0
 
@@ -2989,6 +4454,67 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             obs_view[invalid] = 0.0
         return obs.reshape(self.num_envs, -1)
 
+    def _build_cone_context(
+        self,
+        agent_idx: int,
+        root_pos_w: torch.Tensor,
+        yaw_by_agent: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return cone positions in ego frame as a flat obs vector [E, k * 3].
+
+        Each cone slot: (x_ego_norm, y_ego_norm, type_norm) where
+        type = _CONE_POINT_TYPE / obs_road_points_type_norm (so cones are
+        distinguishable from lane centers=2, dividers=6, road edges=15 in the
+        same normalised feature space the road-point context uses).
+        Slots for non-existent / out-of-radius cones are zero-padded.
+        """
+        k = max(0, int(self.cfg.obs_cone_points_k))
+        zeros = torch.zeros((self.num_envs, k * _CONE_FEAT_DIM), dtype=torch.float32, device=self.device)
+        if (
+            not bool(self.cfg.obs_cone_points_enable)
+            or k <= 0
+            or self._cone_positions_xy_m.numel() == 0
+            or self._cone_positions_xy_m.shape[1] == 0
+        ):
+            return zeros
+
+        env_origins_xy = self.scene.env_origins[:, :2]
+        agent_pos_xy = root_pos_w[agent_idx, :, :2] - env_origins_xy  # [E, 2] env-local
+
+        # Relative offsets from each agent to each cone: [E, N, 2]
+        dx_all = self._cone_positions_xy_m[..., 0] - agent_pos_xy[:, 0].unsqueeze(1)
+        dy_all = self._cone_positions_xy_m[..., 1] - agent_pos_xy[:, 1].unsqueeze(1)
+        dist_sq = dx_all.square() + dy_all.square()
+
+        # Mask out zero-padded cone slots using the authoritative valid mask.
+        valid = self._cone_positions_valid.clone()  # [E, N]
+
+        radius_m = float(max(0.0, self.cfg.obs_cone_points_radius_m))
+        if radius_m > 0.0:
+            valid = valid & (dist_sq <= radius_m * radius_m)
+
+        # Sort valid cones by distance ascending; push invalid ones to back.
+        sort_keys = torch.where(valid, dist_sq, torch.full_like(dist_sq, float("inf")))
+        sorted_indices = torch.argsort(sort_keys, dim=1)[:, :k]
+
+        norm = float(radius_m if radius_m > 0.0 else max(1.0e-6, self._scene_factory_bounds_size_m))
+        type_norm = float(self.cfg.obs_road_points_type_norm)
+        cone_type_val = float(_CONE_POINT_TYPE) / type_norm if type_norm > 0.0 else float(_CONE_POINT_TYPE)
+
+        obs = torch.zeros((self.num_envs, k, _CONE_FEAT_DIM), dtype=torch.float32, device=self.device)
+        slot_count = int(sorted_indices.shape[1])
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        selected_dx = dx_all[env_ids.unsqueeze(1), sorted_indices]
+        selected_dy = dy_all[env_ids.unsqueeze(1), sorted_indices]
+        x_ego, y_ego = _world_to_ego_xy_torch(selected_dx, selected_dy, yaw_by_agent[agent_idx].unsqueeze(1))
+        obs[:, :slot_count, 0] = x_ego / norm
+        obs[:, :slot_count, 1] = y_ego / norm
+        obs[:, :slot_count, 2] = cone_type_val
+        # Zero out invalid (out-of-radius / padding) slots
+        invalid = ~valid[env_ids.unsqueeze(1), sorted_indices]
+        obs[:, :slot_count][invalid] = 0.0
+        return obs.reshape(self.num_envs, -1)
+
     def _nearest_neighbor_features(self, agent_idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self._num_agents <= 1:
             zeros = torch.zeros(self.num_envs, 3, device=self.device)
@@ -3176,6 +4702,8 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                     obs_parts.append(self._build_reference_road_context(agent_idx, root_pos_w, yaw_by_agent))
                     self._sync_timing_device()
                     obs_road_ms += (perf_counter() - obs_road_start) * 1000.0
+                if bool(self.cfg.obs_cone_points_enable):
+                    obs_parts.append(self._build_cone_context(agent_idx, root_pos_w, yaw_by_agent))
                 if bool(self.cfg.obs_neighbor_enable):
                     self._sync_timing_device()
                     obs_neighbor_start = perf_counter()
@@ -3498,6 +5026,120 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         penalties = -self._choco_road_edge_ttc_abs_penalty_from_min_ttc(min_ttc)
         return torch.where(valid_env, penalties, zeros)
 
+    def _check_workzone_boxes_all(self, root_pos_xy: torch.Tensor) -> torch.Tensor:
+        """Check if each agent is inside any forbidden workzone box.
+
+        Args:
+            root_pos_xy: [num_agents, num_envs, 2] agent positions in env-local frame.
+        Returns:
+            [num_agents, num_envs] bool — True if agent is inside a forbidden box.
+        """
+        n_boxes = self._forbidden_boxes_m.shape[1]
+        result = torch.zeros(
+            (self._num_agents, self.num_envs), dtype=torch.bool, device=self.device
+        )
+        if n_boxes == 0:
+            return result
+        # _forbidden_boxes_m: [E, M, 5] = (cx, cy, half_len, half_wid, yaw_rad)
+        cx = self._forbidden_boxes_m[:, :, 0]       # [E, M]
+        cy = self._forbidden_boxes_m[:, :, 1]       # [E, M]
+        half_len = self._forbidden_boxes_m[:, :, 2]  # [E, M]
+        half_wid = self._forbidden_boxes_m[:, :, 3]  # [E, M]
+        yaw = self._forbidden_boxes_m[:, :, 4]       # [E, M]
+
+        # root_pos_xy: [A, E, 2] — translate relative to each box center
+        # dx/dy: [A, E, M]
+        dx = root_pos_xy[:, :, 0].unsqueeze(2) - cx.unsqueeze(0)   # [A, E, M]
+        dy = root_pos_xy[:, :, 1].unsqueeze(2) - cy.unsqueeze(0)   # [A, E, M]
+
+        # Rotate to box local frame (rotate by -yaw)
+        cos_neg = torch.cos(-yaw).unsqueeze(0)   # [1, E, M]
+        sin_neg = torch.sin(-yaw).unsqueeze(0)   # [1, E, M]
+        x_local = cos_neg * dx - sin_neg * dy    # [A, E, M]
+        y_local = sin_neg * dx + cos_neg * dy    # [A, E, M]
+
+        # Check inside box
+        inside = (x_local.abs() <= half_len.unsqueeze(0)) & (y_local.abs() <= half_wid.unsqueeze(0))  # [A, E, M]
+
+        # Only consider valid boxes (count > 0 per env)
+        box_valid = (torch.arange(n_boxes, device=self.device).unsqueeze(0) < self._forbidden_boxes_count.unsqueeze(1))  # [E, M]
+        inside = inside & box_valid.unsqueeze(0)   # [A, E, M]
+
+        # OR across all boxes
+        result = inside.any(dim=2)   # [A, E]
+        return result
+
+    def _compute_workzone_cone_penalty_all(
+        self,
+        *,
+        root_pos_xy: torch.Tensor,
+    ) -> torch.Tensor:
+        """Penalize each agent proportionally to how close it gets to any workzone cone.
+
+        Returns shape [num_agents, num_envs] with non-positive values.
+        """
+        zeros = torch.zeros((self._num_agents, self.num_envs), dtype=torch.float32, device=self.device)
+        if not bool(self.cfg.reward_workzone_cone_penalty_enable):
+            return zeros
+        n_cones = self._cone_positions_xy_m.shape[1]
+        if n_cones == 0:
+            return zeros
+
+        alpha = float(self.cfg.reward_workzone_cone_penalty_alpha)
+        safe_dist = float(self.cfg.reward_workzone_cone_safe_dist_m)
+        if safe_dist <= 0.0 or alpha <= 0.0:
+            return zeros
+
+        # root_pos_xy: [A, E, 2], cone_positions_xy_m: [E, N, 2]
+        # => delta: [A, E, N, 2]
+        delta = self._cone_positions_xy_m.unsqueeze(0) - root_pos_xy.unsqueeze(2)
+        dist = torch.linalg.norm(delta, dim=-1)            # [A, E, N]
+
+        # Mask out zero-padded cone slots so padding at (0,0) never triggers a penalty.
+        # _cone_positions_valid: [E, N] — True only for real cones.
+        # Broadcast to [A, E, N] and replace padding distances with +inf before amin.
+        valid_mask = self._cone_positions_valid.unsqueeze(0)           # [1, E, N]
+        dist_masked = torch.where(valid_mask, dist, torch.full_like(dist, float("inf")))
+        min_dist = dist_masked.amin(dim=-1).clamp(max=1e6)             # [A, E]
+
+        excess = torch.clamp(safe_dist - min_dist, min=0.0)  # positive when too close
+        penalty = -(alpha * excess / safe_dist)
+
+        # Hard collision event: one-time penalty per cone hit
+        collision_dist = float(self.cfg.reward_workzone_cone_collision_dist_m)
+        if collision_dist > 0.0:
+            cone_hit = min_dist < collision_dist              # [A, E]
+            new_hit = cone_hit & ~self._cone_collision_done_mask  # [A, E]
+            self._cone_collision_done_mask |= cone_hit
+            penalty = penalty + new_hit.float() * float(self.cfg.reward_workzone_cone_collision_penalty)
+
+        return penalty
+
+    def _compute_workzone_speed_penalty_all(
+        self,
+        *,
+        root_lin_vel_xy: torch.Tensor,
+    ) -> torch.Tensor:
+        """Penalize each agent for exceeding the per-env workzone speed limit.
+
+        Returns shape [num_agents, num_envs] with non-positive values.
+        Envs without a speed limit (limit <= 0) receive zero penalty.
+        """
+        zeros = torch.zeros((self._num_agents, self.num_envs), dtype=torch.float32, device=self.device)
+        if not bool(self.cfg.reward_workzone_speed_penalty_enable):
+            return zeros
+
+        speed_limit = self._cone_speed_limit_mps  # [E]
+        has_limit = speed_limit > 0.0              # [E]
+        if not bool(torch.any(has_limit).item()):
+            return zeros
+
+        beta = float(self.cfg.reward_workzone_speed_penalty_beta)
+        planar_speed = torch.linalg.norm(root_lin_vel_xy, dim=-1)  # [A, E]
+        excess = torch.clamp(planar_speed - speed_limit.unsqueeze(0), min=0.0)  # [A, E]
+        penalty = -(beta * excess / torch.clamp(speed_limit.unsqueeze(0), min=1.0e-3))
+        return torch.where(has_limit.unsqueeze(0), penalty, zeros)
+
     def _get_rewards_choco_aligned(self) -> dict[str, torch.Tensor]:
         rewards = {}
 
@@ -3512,10 +5154,11 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         goal_pos_b_all, goal_distance_all = self._compute_goal_distance_all()
         yaw_by_agent = self._compute_yaw_by_agent(root_quat_w)
         pairwise_ttc_s, max_drac_by_agent = self._compute_pairwise_vehicle_ttc_s(root_pos_w, yaw_by_agent, root_lin_vel_w)
+        self._step_drac_by_agent = max_drac_by_agent  # [num_agents, num_envs] — instantaneous DRAC for HUD
         geom_lane_types = torch.tensor(self.cfg.reward_choco_geom_lane_types, dtype=torch.long, device=self.device)
-        geom_lane_mask = self._lane_touch_valid & torch.isin(self._lane_touch_types, geom_lane_types)
+        geom_lane_mask = self._lane_touch_valid.to(self.device) & torch.isin(self._lane_touch_types.to(self.device), geom_lane_types)
         road_edge_types = torch.tensor(self.cfg.reward_choco_geom_road_edge_types, dtype=torch.long, device=self.device)
-        road_edge_mask = self._lane_touch_valid & torch.isin(self._lane_touch_types, road_edge_types)
+        road_edge_mask = self._lane_touch_valid.to(self.device) & torch.isin(self._lane_touch_types.to(self.device), road_edge_types)
         self._sync_timing_device()
         reward_shared_ms = (perf_counter() - reward_shared_start) * 1000.0
 
@@ -3547,6 +5190,18 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         )
         self._sync_timing_device()
         reward_road_edge_ttc_ms = (perf_counter() - reward_road_edge_ttc_start) * 1000.0
+
+        # --- Workzone cone proximity penalty (all agents, GPU-batched) ---
+        cone_penalty_all = self._compute_workzone_cone_penalty_all(root_pos_xy=root_pos_xy)
+        speed_penalty_all = self._compute_workzone_speed_penalty_all(
+            root_lin_vel_xy=root_lin_vel_xy
+        )
+
+        # --- Workzone forbidden box entry penalty (all agents, GPU-batched) ---
+        if float(self.cfg.reward_workzone_box_entry_penalty) != 0.0 and self._forbidden_boxes_m.shape[1] > 0:
+            _in_box_all = self._check_workzone_boxes_all(root_pos_xy)  # [A, E]
+        else:
+            _in_box_all = None
 
         for agent_idx, agent_id in enumerate(self._agent_ids):
             self._sync_timing_device()
@@ -3641,6 +5296,43 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
 
             road_edge_ttc_penalty = road_edge_ttc_penalty_all[agent_idx] * active_float
 
+            workzone_cone_penalty = cone_penalty_all[agent_idx] * active_float
+            workzone_speed_penalty = speed_penalty_all[agent_idx] * active_float
+
+            # Workzone forbidden box entry penalty
+            if _in_box_all is not None:
+                workzone_box_penalty = _in_box_all[agent_idx].float() * float(self.cfg.reward_workzone_box_entry_penalty) * active_float
+            else:
+                workzone_box_penalty = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+
+            # Update workzone safety tracking
+            _cone_near_miss_threshold = float(self.cfg.reward_workzone_cone_safe_dist_m)
+            if self._cone_positions_xy_m.shape[1] > 0:
+                _agent_pos = root_pos_xy[agent_idx]  # [E, 2]
+                _delta = self._cone_positions_xy_m - _agent_pos.unsqueeze(1)  # [E, N, 2]
+                _cone_dist_all = torch.linalg.norm(_delta, dim=-1)  # [E, N]
+                # Mask out padded slots before finding nearest cone
+                _cone_dist_masked = torch.where(
+                    self._cone_positions_valid,
+                    _cone_dist_all,
+                    torch.full_like(_cone_dist_all, float("inf")),
+                )
+                _min_cone_dist = _cone_dist_masked.amin(dim=-1).clamp(max=1e6)  # [E]
+                self._episode_cone_near_miss_steps[agent_idx] += (
+                    active_mask & (_min_cone_dist < _cone_near_miss_threshold)
+                ).float()
+            _speed_limit = self._cone_speed_limit_mps  # [E]
+            _has_limit = _speed_limit > 0.0
+            if bool(torch.any(_has_limit).item()):
+                _planar_speed = torch.linalg.norm(root_lin_vel_xy[agent_idx], dim=-1)  # [E]
+                self._episode_speed_violation_steps[agent_idx] += (
+                    active_mask & _has_limit & (_planar_speed > _speed_limit)
+                ).float()
+            if _in_box_all is not None:
+                self._episode_box_entry_steps[agent_idx] += (
+                    active_mask & _in_box_all[agent_idx]
+                ).float()
+
             self._sync_timing_device()
             reward_finalize_start = perf_counter()
             rewards[agent_id] = (
@@ -3655,6 +5347,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                 + road_edge_ttc_penalty
                 + geom_lane_reward
                 + geom_route_progress
+                + workzone_cone_penalty
+                + workzone_speed_penalty
+                + workzone_box_penalty
             )
 
             self._episode_sums["goal_bonus"][agent_idx] += success_bonus
@@ -3668,6 +5363,9 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._episode_sums["road_edge_ttc_penalty"][agent_idx] += road_edge_ttc_penalty
             self._episode_sums["geom_lane_reward"][agent_idx] += geom_lane_reward
             self._episode_sums["geom_route_progress"][agent_idx] += geom_route_progress
+            self._episode_sums["workzone_cone_penalty"][agent_idx] += workzone_cone_penalty
+            self._episode_sums["workzone_speed_penalty"][agent_idx] += workzone_speed_penalty
+            self._episode_sums["workzone_box_penalty"][agent_idx] += workzone_box_penalty
 
             self._previous_goal_distance[agent_idx] = goal_distance
             self._previous_raw_actions[agent_idx] = self._raw_actions[agent_idx]
@@ -3839,6 +5537,7 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             "collision_test",
             "scene_factory_collision_test",
             "scene_factory_multiworld_random_steer_test",
+            "physics_validation",  # no episode resets during controlled physics test
         }:
             false_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             terminated = {agent_id: false_buf.clone() for agent_id in self._agent_ids}
@@ -4067,6 +5766,47 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._episode_near_miss_steps[:, env_ids] = 0.0
             self._episode_max_drac[:, env_ids] = 0.0
 
+            # Workzone safety metrics (WZ-OPT-09). Snapshot before clearing; per-world
+            # summaries below are consumed by policy eval after reset.
+            workzone_cone_near_miss_snapshot = None
+            workzone_speed_violation_snapshot = None
+            workzone_box_entry_snapshot = None
+            if self._cone_positions_xy_m.shape[1] > 0 or self._forbidden_boxes_m.shape[1] > 0:
+                cone_near_miss = self._episode_cone_near_miss_steps[:, env_ids]  # [A, E_local]
+                speed_viol = self._episode_speed_violation_steps[:, env_ids]     # [A, E_local]
+                box_entry = self._episode_box_entry_steps[:, env_ids]            # [A, E_local]
+                workzone_cone_near_miss_snapshot = cone_near_miss.detach().clone()
+                workzone_speed_violation_snapshot = speed_viol.detach().clone()
+                workzone_box_entry_snapshot = box_entry.detach().clone()
+                _w_steps = torch.clamp(
+                    self._steps_since_reset_buf[env_ids].float().unsqueeze(0), min=1.0
+                )  # [1, E_local]
+                if self._cone_positions_xy_m.shape[1] > 0:
+                    aggregate_log["WorkzoneMetrics/cone_near_miss_rate"] = (
+                        (cone_near_miss * world_active_mask.float()).sum()
+                        / spawned_denom
+                        / _w_steps.mean().clamp(min=1.0)
+                    ).item()
+                    aggregate_log["WorkzoneMetrics/speed_violation_rate"] = (
+                        (speed_viol * world_active_mask.float()).sum()
+                        / spawned_denom
+                        / _w_steps.mean().clamp(min=1.0)
+                    ).item()
+                if self._forbidden_boxes_m.shape[1] > 0:
+                    aggregate_log["WorkzoneMetrics/box_entry_rate"] = (
+                        (box_entry * world_active_mask.float()).sum()
+                        / spawned_denom
+                        / _w_steps.mean().clamp(min=1.0)
+                    ).item()
+                    aggregate_log["WorkzoneMetrics/box_entry_count"] = float((box_entry * world_active_mask.float()).sum().item())
+                    aggregate_log["WorkzoneMetrics/box_ever_entered_rate"] = (
+                        ((box_entry > 0).float() * world_active_mask.float()).sum()
+                        / spawned_denom
+                    ).item()
+                self._episode_cone_near_miss_steps[:, env_ids] = 0.0
+                self._episode_speed_violation_steps[:, env_ids] = 0.0
+                self._episode_box_entry_steps[:, env_ids] = 0.0
+
             self._lifetime_controlled_spawn_count += float(total_spawned_count.item())
             self._lifetime_success_count += float(success_count_total.item())
             self._lifetime_all_goals_reached_count += float(torch.count_nonzero(all_goals_reached).item())
@@ -4227,6 +5967,29 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
                         "near_miss_rate": float(self._tmp_world_near_miss_rate[local_idx]) if getattr(self, "_tmp_world_near_miss_rate", None) is not None else -1.0,
                         "mean_max_drac": float(self._tmp_world_mean_max_drac[local_idx]) if getattr(self, "_tmp_world_mean_max_drac", None) is not None else -1.0,
                         "high_drac_rate": float(self._tmp_world_high_drac_rate[local_idx]) if getattr(self, "_tmp_world_high_drac_rate", None) is not None else -1.0,
+                        # Workzone safety metrics per world (step-averaged)
+                        "cone_near_miss_rate": float(
+                            (workzone_cone_near_miss_snapshot[:, local_idx] * world_active_mask[:, local_idx].float()).sum()
+                            / denom
+                            / max(1, int(world_episode_length_steps[local_idx]))
+                        ) if workzone_cone_near_miss_snapshot is not None and self._cone_positions_xy_m.shape[1] > 0 else -1.0,
+                        "speed_violation_rate": float(
+                            (workzone_speed_violation_snapshot[:, local_idx] * world_active_mask[:, local_idx].float()).sum()
+                            / denom
+                            / max(1, int(world_episode_length_steps[local_idx]))
+                        ) if workzone_speed_violation_snapshot is not None and self._cone_positions_xy_m.shape[1] > 0 else -1.0,
+                        "box_entry_rate": float(
+                            (workzone_box_entry_snapshot[:, local_idx] * world_active_mask[:, local_idx].float()).sum()
+                            / denom
+                            / max(1, int(world_episode_length_steps[local_idx]))
+                        ) if workzone_box_entry_snapshot is not None and self._forbidden_boxes_m.shape[1] > 0 else -1.0,
+                        "box_entry_count": float(
+                            (workzone_box_entry_snapshot[:, local_idx] * world_active_mask[:, local_idx].float()).sum()
+                        ) if workzone_box_entry_snapshot is not None and self._forbidden_boxes_m.shape[1] > 0 else -1.0,
+                        "box_ever_entered_rate": float(
+                            ((workzone_box_entry_snapshot[:, local_idx] > 0).float() * world_active_mask[:, local_idx].float()).sum()
+                            / denom
+                        ) if workzone_box_entry_snapshot is not None and self._forbidden_boxes_m.shape[1] > 0 else -1.0,
                     }
                 )
         self._sync_timing_device()
@@ -4252,7 +6015,15 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
         self._step_timing_last_ms["reset_backend_ms"] = (perf_counter() - reset_backend_start) * 1000.0
 
         if len(env_ids) == self.num_envs:
-            self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
+            # Startup decorrelation for parallel training: give each env a random
+            # phase so they don't all reset in lockstep. This is meaningless with a
+            # single env, where it instead randomly TRUNCATES every episode — which
+            # silently breaks single-env eval/viz (each convoy gets a different, short
+            # budget). Guard on num_envs > 1 so single-env runs get the full episode.
+            if self.num_envs > 1:
+                self.episode_length_buf = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
+            else:
+                self.episode_length_buf = torch.zeros_like(self.episode_length_buf)
         self._steps_since_reset_buf[env_ids] = 0
         # Reset bicycle speed buffer for re-spawned envs
         self._bicycle_speed_buf[:, env_ids] = 0.0
@@ -4316,6 +6087,8 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             self._crash_too_far_done_mask[agent_idx, env_ids] = False
             self._crash_bad_tilt_done_mask[agent_idx, env_ids] = False
             self._lane_forbidden_done_mask[agent_idx, env_ids] = False
+            self._cone_collision_done_mask[agent_idx, env_ids] = False
+            self._episode_box_entry_steps[agent_idx, env_ids] = 0.0
             self._pending_goal_done_mask[agent_idx, env_ids] = False
             self._pending_collision_done_mask[agent_idx, env_ids] = False
             self._pending_crash_done_mask[agent_idx, env_ids] = False
@@ -4524,6 +6297,11 @@ class StudentVehicleMultiAgentGoalEnv(DirectMARLEnv):
             0.0,
             (perf_counter() - reset_spawn_prep_start) * 1000.0 - float(reset_write_ms),
         )
+        # Cone randomization callback — registered externally (e.g. RandomConeDropper).
+        # Called after agents respawn so cone layouts match the new episode's road context.
+        if self._cone_drop_fn is not None:
+            self._cone_drop_fn(env_ids)
+
         self._lane_touch_mask_cache_valid = False
         self._sync_timing_device()
         self._step_timing_last_ms["reset_ms"] = (perf_counter() - reset_start) * 1000.0

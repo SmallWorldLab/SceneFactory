@@ -97,6 +97,7 @@ def build_student_vehicle_articulation_cfg(
     usd_path: str,
     spawn_height_m: float = 1.6,
     prim_path: str = "/World/envs/env_.*/Vehicle",
+    max_depenetration_velocity: float = 20.0,
 ) -> ArticulationCfg:
     return ArticulationCfg(
         prim_path=str(prim_path),
@@ -107,7 +108,7 @@ def build_student_vehicle_articulation_cfg(
                 rigid_body_enabled=True,
                 max_linear_velocity=200.0,
                 max_angular_velocity=200.0,
-                max_depenetration_velocity=20.0,
+                max_depenetration_velocity=float(max_depenetration_velocity),
                 enable_gyroscopic_forces=True,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
@@ -152,7 +153,13 @@ def _dry_ground_material_cfg(config: StudentTunableConfig) -> sim_utils.RigidBod
     dry_longitudinal_scale = float(config.surface_longitudinal_scale.get("dry_asphalt", 1.0))
     dry_lateral_scale = float(config.surface_lateral_scale.get("dry_asphalt", 1.0))
     effective_scale = dry_surface_scale * math.sqrt(max(1.0e-4, dry_longitudinal_scale * dry_lateral_scale))
-    static_friction = min(1.0, max(1.0e-3, 1.00 * effective_scale))
+    # Ceiling raised 1.0 -> 1.5 so a dry-AC TRFC estimate (mu ~= 1.10) is no longer
+    # clipped here.  NOTE: with the sysid v4 scales all at 1.0 the second term is
+    # 1.00, so this ceiling is currently non-binding and the value stays 1.0 --
+    # the remaining dry cap is on the WHEEL side of the "min" friction combine
+    # (see StudentVehicleMultiAgentGoalEnvCfg.sim.physics_material and the wheel
+    # material baked into the vehicle USD, both static_friction=1.0).
+    static_friction = min(1.5, max(1.0e-3, 1.00 * effective_scale))
     dynamic_friction = min(static_friction, max(1.0e-3, 0.95 * effective_scale))
     return sim_utils.RigidBodyMaterialCfg(
         friction_combine_mode="min",
@@ -170,17 +177,26 @@ def _spawn_local_ground_plane(prim_path: str, physics_material: sim_utils.RigidB
         # Widen the ground's contact_offset from the PhysX auto-default (~0.02 m).
         # With the default, wheels of vehicles after agent 0 tunnel past the thin
         # contact-generation band on the spawn-drop landing step and end up ~0.2 m
-        # INSIDE the cuboid, carrying no normal force (measured incoming joint
-        # force ~450 N vs ~30 kN when loaded).  The car high-centres and its
-        # driven wheels spin with no traction: the "stops once, never restarts"
-        # freeze.  A single agent never hits it; it starts at 2 agents, which is
-        # why single-agent validation never caught it.
+        # INSIDE the cuboid, carrying no normal force (measured incoming joint force
+        # ~450 N vs ~30 kN when loaded).  The car high-centres and its driven wheels
+        # spin with no traction: the "stops once, never restarts" freeze.  A single
+        # agent never hits it; it starts at 2 agents, and which agents fail depends
+        # on the agent count, so the trigger is an index-dependent asymmetry in how
+        # the GPU solver resolves the per-vehicle islands, not geometry.
         #
-        # 0.10 m is empirical: 0.03 and 0.05 still bury agents, 0.08 catches all
-        # 8 at spawn_height 1.2, 0.10 also holds at 1.6.  rest_offset stays 0.0,
-        # so resting height is unchanged.  Configurable because the value was
-        # measured with 1000 m slabs overlapping nine deep; a single
-        # non-overlapping slab loses that redundancy and needs more.
+        # 0.10 m is empirical, not derived: 0.03 and 0.05 still bury agents, 0.08
+        # catches all 8 at spawn_height 1.2, 0.10 also holds at 1.6.  Note the naive
+        # "impact speed x substep" estimate (~0.024 m) does NOT explain it -- the
+        # freeze also occurs at spawn_height 0.92 where there is no drop at all.
+        # Cost: ~3% peak speed on the single-agent sanity test (4.75 vs 4.93 m/s);
+        # 0.15 m costs ~11% and is not needed.  rest_offset stays 0.0, so resting
+        # height is unchanged (wheel centres settle at the 0.35 m wheel radius).
+        # NOTE (2026-07-26): the 0.10 default and the "0.15 is not needed" note
+        # above were both measured with ground_cuboid_size_m=1000 at env_spacing
+        # 400, where every vehicle rests on NINE overlapping slabs and a wheel
+        # that tunnels one still catches another.  With a single non-overlapping
+        # slab (cuboid 300) that redundancy is gone and 0.10 no longer holds:
+        # measured 50-54% of agents idle with slip ~0.36.  Hence configurable.
         collision_props=sim_utils.CollisionPropertiesCfg(
             collision_enabled=True, contact_offset=float(contact_offset), rest_offset=0.0
         ),
@@ -402,11 +418,12 @@ class StudentVehicleGoalEnv(DirectRLEnv):
             config=self._tunable_config,
         )
 
-        _spawn_ground("/World/ground", _dry_ground_material_cfg(self._tunable_config), mode=self.cfg.ground_mode)
+        _per_env_ground_path = self.scene.env_prim_paths[0] + "/Ground"
+        _spawn_ground(_per_env_ground_path, _dry_ground_material_cfg(self._tunable_config), mode="cuboid")
 
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
-            self.scene.filter_collisions(global_prim_paths=["/World/ground"])
+            self.scene.filter_collisions(global_prim_paths=[])
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2500.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
