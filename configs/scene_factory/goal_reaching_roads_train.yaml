@@ -1,7 +1,6 @@
 # SceneFactory road-goal-reaching training preset.
 # Usage:
-#   CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 conda run -n isaac-pytorch python -u \
-#     -m src.train_student_vehicle_goal_multiagent_rsl_rl \
+#   PYTHONPATH=. python -u src/train_student_vehicle_goal_multiagent_rsl_rl.py \
 #     --config configs/scene_factory/goal_reaching_roads_train.yaml \
 #     --headless
 #
@@ -14,9 +13,12 @@ env:
   num_envs: 16
   num_agents_per_env: 2
   observation_mode: "goal_reaching"
-  env_spacing: 240.0
+  env_spacing: 1300.0
   spawn_height_m: 1.2
-  ground_mode: "plane"
+  ground_mode: "cuboid"
+  # 0.30 rather than the 0.10 default: 0.10 was tuned under overlapping
+  # slabs and is insufficient for the isolated slabs these configs now use.
+  ground_contact_offset_m: 0.30
   use_scene_factory_roads: true
   start_radius_m: 0.0
   agent_spawn_circle_radius_m: 0.0

@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
 # run_eval_pretrained.sh
 # ─────────────────────────────────────────────────────────────────────────────
-# Evaluate the two pre-trained checkpoints shipped with this repo.
+# Evaluate the two pre-trained policies shipped with this repo. This is the
+# quickest way to confirm a working install end to end.
 #
-#   v7  — weather-aware policy (trained with friction token observation)
-#   v8  — no-weather baseline  (friction token masked, same architecture)
+#   dry_trained       — trained on an all-dry scene pool
+#   weather_exposed   — trained on the same pool with 0-12 mm water films
 #
-# Each is evaluated on two conditions:
-#   dry  — Asphalt Concrete, 0 mm water film  (mu ≈ 1.105)
-#   wet  — SMA surface,     2.0 mm water film  (mu ≈ 0.001, near-hydroplaning)
+# Each is evaluated on the held-out 199-scene pool under two conditions:
+#   dry    — Asphalt Concrete, 0 mm water film
+#   wet    — 5 mm water film, which is inside the range where traction binds
 #
-# Results are written to a timestamped directory under the repo root.
+# For the full result -- 4 surfaces x N seeds, with significance tests -- use
+# run_paper_table4_eval.sh instead. This script is one seed per cell.
+#
 # Expected runtime: ~5 min per condition on a single GPU.
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -e
 cd "$(dirname "$0")"
 
-PYTHON="src/train_student_vehicle_goal_multiagent_rsl_rl.py"
+TRAINER="src/train_student_vehicle_goal_multiagent_rsl_rl.py"
 COMMON="--invincible --headless --no-use_fabric --device cuda:0"
+CFG=configs/scene_factory/eval_knn_backbone_weather_multiseed.yaml
 
-V7_CKPT="checkpoints/v7_weather_aware_iter600.pt"
-V8_CKPT="checkpoints/v8_no_weather_iter300.pt"
+CKPT_DRY="${CKPT_DRY:-checkpoints/dry_trained_iter900.pt}"
+CKPT_WET="${CKPT_WET:-checkpoints/weather_exposed_iter900.pt}"
 
-V8_WET_CFG="configs/scene_factory/generated/eval_v8_sysid4_noweather_model_200_test64_hard_sma2mm.yaml"
-
-for f in "$V7_CKPT" "$V8_CKPT" \
-    "configs/scene_factory/generated/eval_v7_sysid4_weather_model_600_test64_dry.yaml" \
-    "configs/scene_factory/generated/eval_v8_sysid4_noweather_model_300_test64_dry.yaml" \
-    "configs/scene_factory/generated/eval_v7_sysid4_weather_model_600_test64_hard_sma2mm.yaml" \
-    "$V8_WET_CFG"; do
+for f in "$CKPT_DRY" "$CKPT_WET" "$CFG" \
+    configs/scene_factory/generated/eval_unseen_199scenes_dry.yaml \
+    configs/scene_factory/generated/eval_unseen_199scenes_wet5mm.yaml; do
   [ -f "$f" ] || { echo "ERROR: missing file: $f"; exit 1; }
 done
 
@@ -38,37 +38,35 @@ echo " SceneFactory pre-trained policy evaluation"
 echo " $(date)"
 echo "============================================================"
 
-# ── v7: weather-aware, dry ──────────────────────────────────────────────────
-echo ""
-echo "[1/4] v7 weather-aware — DRY (AC, 0 mm)"
-PYTHONPATH=. python -u $PYTHON $COMMON \
-  --config configs/scene_factory/generated/eval_v7_sysid4_weather_model_600_test64_dry.yaml \
-  --test_mode scene_factory_policy_eval \
-  --checkpoint_path "$V7_CKPT"
-
-# ── v8: no-weather baseline, dry ────────────────────────────────────────────
-echo ""
-echo "[2/4] v8 no-weather baseline — DRY (AC, 0 mm)"
-PYTHONPATH=. python -u $PYTHON $COMMON \
-  --config configs/scene_factory/generated/eval_v8_sysid4_noweather_model_300_test64_dry.yaml \
-  --test_mode scene_factory_policy_eval \
-  --checkpoint_path "$V8_CKPT"
-
-# ── v7: weather-aware, heavy wet ────────────────────────────────────────────
-echo ""
-echo "[3/4] v7 weather-aware — HEAVY WET (SMA, 2.0 mm, mu≈0.001)"
-PYTHONPATH=. python -u $PYTHON $COMMON \
-  --config configs/scene_factory/generated/eval_v7_sysid4_weather_model_600_test64_hard_sma2mm.yaml \
-  --test_mode scene_factory_policy_eval \
-  --checkpoint_path "$V7_CKPT"
-
-# ── v8: no-weather baseline, heavy wet ──────────────────────────────────────
-echo ""
-echo "[4/4] v8 no-weather baseline — HEAVY WET (SMA, 2.0 mm, mu≈0.001)"
-PYTHONPATH=. python -u $PYTHON $COMMON \
-  --config "$V8_WET_CFG" \
-  --test_mode scene_factory_policy_eval \
-  --checkpoint_path "$V8_CKPT"
+# The weather token, and why the two policies are not fed the same input.
+#
+# The dry-trained policy saw water_film_mm = 0.0 in EVERY world, so it has never
+# seen a nonzero first element of the weather token. Handing it the live token on
+# a wet road is an out-of-distribution INPUT, not a harder road, and it collapses
+# for that reason rather than because of traction. So it is evaluated with the
+# weather channel blinded in every condition: pinned to the dry-AC constant
+# [0,1,0,0], which is bit-identical to the live token on the dry pool.
+#
+# The weather-exposed policy keeps the live token. Using weather information is
+# the capability under test.
+i=1
+for policy in dry_trained weather_exposed; do
+  case "$policy" in
+    dry_trained)     CKPT="$CKPT_DRY"; TOKEN="--obs_weather_context_blind" ;;
+    weather_exposed) CKPT="$CKPT_WET"; TOKEN="--no-obs_weather_context_blind" ;;
+  esac
+  for wx in dry wet5mm; do
+    echo ""
+    echo "[${i}/4] ${policy} — ${wx}"
+    PYTHONPATH=. python -u "$TRAINER" $COMMON \
+      --config "$CFG" \
+      --scene_factory_config "configs/scene_factory/generated/eval_unseen_199scenes_${wx}.yaml" \
+      --test_mode scene_factory_policy_eval \
+      $TOKEN \
+      --checkpoint_path "$CKPT"
+    i=$((i + 1))
+  done
+done
 
 echo ""
 echo "============================================================"

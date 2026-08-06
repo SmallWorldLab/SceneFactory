@@ -1,0 +1,189 @@
+# Weather-EXPOSURE ablation, arm B: EVEN 0.0-0.8 mm PRECIPITATION.
+#
+# Derived from waymo_physx_256_train_16agents_knn.yaml -- the config that produced
+# model E (2026-06-23_23-51-35_knn_16agents/model_2999.pt) -- differing in FOUR
+# keys: scene_factory.config_path, runner.run_name, and two bug fixes shared with
+# arm A (ground_cuboid_size_m, wheel_friction_cap).  Verify with:
+#   diff configs/scene_factory/waymo_physx_256_train_16agents_knn{,_wet0to08}.yaml
+#
+# Pairs with waymo_physx_256_train_16agents_knn_alldry.yaml.  The two configs
+# differ ONLY in their scene pool, and the two pools differ ONLY in water_film_mm.
+#
+# This arm: water film spread evenly over [0.0, 0.8] mm across the 256 worlds.
+# Unlike the pool E trained on -- which put 73/256 worlds (28.5%) past the TRFC
+# mu=0 cliff, i.e. on frictionless ice -- every world here has a usable mu.
+#
+#   effective mu span : 0.804 - 1.200 (mean 0.946, sd 0.107)
+#   zero-mu worlds    : 0 / 256
+#   vs arm A          : mean 0.946 against 1.121
+#
+# With the wheel cap at 1.2 only 6/256 worlds still clip, down from 84/256 at the
+# old 1.0 cap.  That matters because a clipped world reports rain in its weather
+# token while behaving exactly like dry ground -- direct evidence to the policy
+# that the weather channel is uninformative.
+#
+# CAVEAT, read before interpreting a null result: per the measured brake sweep
+# (scratch_viz_logs/brake_sweep_no0_20260724_022740.log) the stopping distance
+# from 6 m/s is 1.92 m at mu=1.0 and 2.29 m at mu=0.8 -- and NON-MONOTONE, since
+# mu=0.9 gives 2.36 m.  Above mu~0.7 friction is not the binding constraint for
+# this task, so the physical lever between these two arms is roughly 0.4 m of
+# stopping distance.  Widening the mu contrast (mu in [0.35, 0.7] via
+# friction_ruler_mu_values) is what would actually make the ablation sensitive.
+#
+# NOTE `ground_mode: "plane"` below is a DEAD FIELD -- see the note in the arm-A
+# config.  Every run of this env, including E, has been on per-env cuboids.
+#
+# 256 worlds x 16 agents = 4096 agent slots
+#
+# To train:
+#   bash run_train_knn_wet0to08.sh
+
+env:
+  num_envs: 256
+  num_agents_per_env: 16
+  observation_mode: "choco_reference"
+  env_spacing: 400.0
+  # S1 FIX. The ground cuboid default is 1000 m (half-width 500 m) while envs sit
+  # 400 m apart, so every point a vehicle can reach lies inside NINE envs' ground
+  # slabs, all with their top face at z=0.  Cross-env collision filtering does not
+  # save this: filter_collisions is CPU-only (multiagent env :1550-1553) and the
+  # automatic GPU path needs replicate_physics=True, which is false here.  PhysX
+  # then splits normal force across the stacked slabs and the per-world mu is
+  # averaged over the 3x3 neighbourhood -- measured at 0.8% friction effect in
+  # configs/scene_factory/physics_validation.yaml (60 m spacing, 1000 m slab).
+  # THIS ARM CANNOT WORK WITHOUT THIS FIX: slab averaging collapses the per-world
+  # mu spread and decorrelates it from the weather token.
+  # Sized to the map crop instead of widening env_spacing: bounds_size_m is 200 m
+  # (+/-100 m) and max_distance_from_origin_m is 100 m, so 300 m covers the whole
+  # reachable area with 50 m margin, and adjacent slabs span [250, 550] against
+  # this one's [-150, 150] -- a 100 m gap.  Keeping spacing at 400 also keeps
+  # world origins near the coordinate origin (6.4 km span, not 24 km), which
+  # matters for float32 position precision.
+  ground_cuboid_size_m: 300.0
+  # Wheel-side friction ceiling. Contact mu = min(ground_mu, this) because both
+  # materials use friction_combine_mode="min". The vehicle USD bakes 1.0
+  # (src/procedural_student_vehicle_import.py:181), which clips every ground mu
+  # above 1.0 -- so a dry AC world estimated at 1.105 was simulated at 1.000 and
+  # 84/256 rainy worlds in arm B were physically identical to bone dry while
+  # their weather token reported rain. Applied at runtime to the wheel shapes,
+  # so the vehicle asset is untouched.
+  wheel_friction_cap: 1.2
+  spawn_height_m: 1.2
+  spawn_yaw_noise_rad: 0.0
+  ground_mode: "plane"
+  use_scene_factory_roads: true
+  reset_mode: "teleport_only"
+  start_radius_m: 0.0
+  agent_spawn_circle_radius_m: 0.0
+  agent_spawn_jitter_m: 0.0
+  episode_length_s: 45.0
+  goal_radius_min_m: 5.0
+  goal_radius_max_m: 30.0
+  goal_reached_threshold_m: 3.0
+  fall_height_threshold_m: 0.0
+  bad_tilt_gravity_threshold: -0.15
+  max_distance_from_origin_m: 100.0
+  agent_neighbor_obs_scale_m: 100.0
+  agent_collision_warmup_steps: 24
+  replicate_physics: false
+  clone_in_fabric: "false"
+
+scene_factory:
+  config_path: "configs/scene_factory/generated/scene_factory_256scene_0414_wet0to08.yaml"
+  world_index: 0
+  world_selection_mode: "random_envs"
+  random_world_seed: 42
+
+observation:
+  weather_context_enable: true
+  road_points_enable: true
+  road_points_k: 250
+  road_points_radius_m: 15.0
+  road_points_type_norm: 20.0
+  road_points_mode: "knn"
+  road_points_include_dirs: true
+  neighbor_enable: true
+  neighbor_k: 8
+  neighbor_include_ttc: true
+  neighbor_include_index: false
+  neighbor_ttc_max_s: 10.0
+  timing_print_enable: false
+  timing_print_every_n: 32
+
+timing:
+  step_log_enable: true
+  step_print_enable: false
+  step_print_every_n: 128
+  step_cuda_sync_enable: false
+
+reward:
+  mode: "choco_baseline"
+  goal_bonus: 60.0
+  lane_center_enable: false
+  lane_forbidden_enable: true
+  lane_forbidden_penalty: -20.0
+  collision_penalty: -6.0
+  crash_penalty: -10.0
+  choco_offroad_penalty: -0.5
+  choco_idle_penalty_enable: true
+  choco_idle_penalty_per_step: 0.06
+  choco_idle_speed_threshold_mps: 2.5
+  choco_geom_lane_enable: true
+  choco_geom_lane_per_step: 0.08
+  choco_geom_lane_tolerance_m: 1.75
+  choco_geom_lane_heading_weight: 0.8
+  choco_geom_lane_min_alignment: 0.35
+  choco_geom_route_progress_weight: 4.0
+  choco_geom_offroad_enable: true
+  choco_geom_offroad_lateral_threshold_m: 3.25
+  choco_geom_offroad_distance_threshold_m: 6.0
+  choco_ttc_penalty_enable: true
+  choco_ttc_penalty_alpha: 0.10
+  choco_ttc_penalty_max: 0.35
+  choco_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_penalty_enable: true
+  choco_road_edge_ttc_penalty_alpha: 0.07
+  choco_road_edge_ttc_penalty_max: 0.40
+  choco_road_edge_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_hard_min_ttc: 0.5
+  choco_road_edge_ttc_radius_m: 40.0
+
+policy:
+  type: "late_fusion"
+  ego_layers: [64, 64]
+  road_layers: [96, 96]
+  vehicle_layers: [96, 96]
+  shared_layers: [128, 64]
+  last_layer_dim_pi: 64
+  last_layer_dim_vf: 64
+  activation: "relu"
+  dropout: 0.0
+  pool: "max"
+
+assets:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
+
+runner:
+  log_dir: "logs/rsl_rl"
+  seed: 42
+  experiment_name: "waymo_physx_256"
+  run_name: "knn_16agents_wet0to08"
+  shared_policy_mode: "agent_slots"
+  max_iterations: 3000
+  num_steps_per_env: 64
+  save_interval: 50
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  noise_std_type: "log"
+  entropy_coef: 1.0e-5
+  learning_rate: 1.0e-4
+  clip_param: 0.15
+  desired_kl: 0.01
+  gamma: 0.99
+  gae_lambda: 0.98
+  value_loss_coef: 1.0
+
+app:
+  device: "cuda:0"
+  rl_device: "cuda:0"

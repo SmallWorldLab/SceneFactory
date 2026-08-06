@@ -158,20 +158,34 @@ def _apply_contact_report_to_colliders(root_prim: Usd.Prim) -> None:
             continue
 
 def _road_type_color_srgb(t: int) -> Tuple[float, float, float]:
-    # Big-contrast palette (sRGB). Tune as you like.
-    palette = [
-        (0.95, 0.35, 0.35),  # red-ish
-        (0.35, 0.75, 0.95),  # sky
-        (0.35, 0.95, 0.55),  # green
-        (0.95, 0.85, 0.35),  # yellow
-        (0.75, 0.45, 0.95),  # purple
-        (0.95, 0.55, 0.25),  # orange
-        (0.55, 0.95, 0.90),  # teal
-        (0.85, 0.85, 0.85),  # light gray
-    ]
+    # Presentation palette — dark-bg friendly, clear luminance hierarchy.
+    # Lane centers dominate; edges recede; boundaries are neutral.
+    _MAP = {
+        1:  (0.12, 0.48, 1.00),   # lane_center: vivid blue
+        2:  (0.80, 0.80, 0.82),   # boundary_left: off-white
+        3:  (0.80, 0.80, 0.82),   # boundary_right: off-white
+        4:  (0.28, 0.28, 0.32),   # road_edge: dark gray, recedes
+        6:  (0.92, 0.72, 0.06),   # broken_divider: amber
+        15: (0.28, 0.28, 0.32),   # road_edge (workzone): dark gray
+        21: (1.00, 0.05, 0.05),   # workzone boundary: vivid red
+    }
     if t < 0:
-        return (0.7, 0.7, 0.7)
-    return palette[int(t) % len(palette)]
+        return (0.35, 0.35, 0.38)
+    return _MAP.get(int(t), (0.40, 0.40, 0.44))   # fallback: neutral gray
+
+
+def _road_type_emissive(t: int) -> float:
+    # Higher emissive = feature pops against dark asphalt.
+    _MAP = {
+        1:  2.5,   # lane centers glow strongly
+        2:  0.5,   # boundaries: subtle glow
+        3:  0.5,
+        4:  0.0,   # road edges: no emissive, stay dark
+        6:  1.5,   # divider: visible amber
+        15: 0.0,
+        21: 6.0,   # workzone boundary: vivid red glow
+    }
+    return _MAP.get(int(t), 0.2)
 
 def _srgb_to_linear(c: float) -> float:
     c = float(c)
@@ -433,6 +447,7 @@ class WaymoJsonMiniWorldBuilder:
         road_points_all: List[Gf.Vec3f] = []
         road_dirs_all: List[Gf.Vec3f] = []
         road_types_all: List[int] = []
+        road_ids_all: List[int] = []
         road_half_lengths_all: List[float] = []
         road_half_widths_all: List[float] = []
         allowed_types = None if allowed_road_types is None else {int(x) for x in allowed_road_types}
@@ -446,10 +461,12 @@ class WaymoJsonMiniWorldBuilder:
         else:
             self._scene_center = np.zeros((3,), dtype=np.float32)
 
-        # group polylines by type
-        by_type: Dict[int, List[np.ndarray]] = {}
+        # group polylines by type, keeping each polyline's scene-JSON id so the
+        # lane-touch metadata can say WHICH lane each sample belongs to
+        by_type: Dict[int, List[Tuple[np.ndarray, int]]] = {}
         for pl in polylines:
             t = _safe_int(pl.get("type", -1), -1)
+            pid = _safe_int(pl.get("id", -1), -1)
             if allowed_types is not None and int(t) not in allowed_types:
                 continue
             xyz = pl.get("xyz", None)
@@ -472,7 +489,7 @@ class WaymoJsonMiniWorldBuilder:
                 if pts_local.shape[0] < 2:
                     continue
 
-            by_type.setdefault(t, []).append(pts_local)
+            by_type.setdefault(t, []).append((pts_local, pid))
 
         # Build one road group per type. Point instancers are compact but have been unstable under
         # fabric/visibility updates for these road lines, so explicit prims are supported as a
@@ -492,7 +509,7 @@ class WaymoJsonMiniWorldBuilder:
             segment_yaws_py = []
 
             seg_count = 0
-            for poly in polys:
+            for poly, poly_id in polys:
                 for i in range(poly.shape[0] - 1):
                     p0 = poly[i]
                     p1 = poly[i + 1]
@@ -508,7 +525,7 @@ class WaymoJsonMiniWorldBuilder:
                     length = float(math.sqrt(dx * dx + dy * dy))
                     if length < 1e-6:
                         continue
-                    if length > float(jump_break_m):
+                    if length > float(jump_break_m) and int(t) != 21:
                         continue
 
                     z_base = float(road_z_m) if flatten_road_z else float((p0[2] + p1[2]) * 0.5)
@@ -520,7 +537,10 @@ class WaymoJsonMiniWorldBuilder:
 
                     yaw = float(math.atan2(dy, dx))
                     q = _quath_from_yaw_z(yaw)
-                    scale = Gf.Vec3f(float(length), float(seg_width), float(seg_height))
+                    # Workzone boundary edges: tall (1.5m) and wide (0.5m) so visible from above.
+                    _w = 0.5 if int(t) == 21 else seg_width
+                    _h = 1.5 if int(t) == 21 else seg_height
+                    scale = Gf.Vec3f(float(length), float(_w), float(_h))
 
                     seg_positions_py.append(mid)
                     seg_orients_py.append(q)
@@ -532,6 +552,7 @@ class WaymoJsonMiniWorldBuilder:
                         Gf.Vec3f(float(dx / length), float(dy / length), 0.0)
                     )
                     road_types_all.append(int(t))
+                    road_ids_all.append(int(poly_id))
                     road_half_lengths_all.append(0.5 * float(length))
                     road_half_widths_all.append(0.5 * float(seg_width))
                     if trigger_enable:
@@ -554,7 +575,8 @@ class WaymoJsonMiniWorldBuilder:
 
             rgb = _road_type_color_srgb(int(t))
             mat_path = f"{type_root}/Materials/RoadType_{int(t):02d}"
-            mat = _get_or_create_preview_material(self.stage, mat_path, rgb_srgb=rgb, emissive_strength=0.15)
+            mat = _get_or_create_preview_material(self.stage, mat_path, rgb_srgb=rgb,
+                                                  emissive_strength=_road_type_emissive(int(t)))
             if render_mode == "explicit_prims":
                 UsdGeom.Xform.Define(self.stage, segments_root)
                 for seg_index, (mid, scale, yaw_rad) in enumerate(zip(seg_positions_py, seg_scales_py, segment_yaws_py)):
@@ -695,8 +717,152 @@ class WaymoJsonMiniWorldBuilder:
             root_prim.SetCustomDataByKey("road_points_m", Vt.Vec3fArray(road_points_all))
             root_prim.SetCustomDataByKey("road_point_dirs", Vt.Vec3fArray(road_dirs_all))
             root_prim.SetCustomDataByKey("road_point_types", Vt.IntArray(road_types_all))
+            root_prim.SetCustomDataByKey("road_point_ids", Vt.IntArray(road_ids_all))
             root_prim.SetCustomDataByKey("road_point_half_lengths_m", Vt.FloatArray(road_half_lengths_all))
             root_prim.SetCustomDataByKey("road_point_half_widths_m", Vt.FloatArray(road_half_widths_all))
+
+    # -------- workzone cones --------
+
+    def _spawn_traffic_cone(
+        self,
+        prim_path: str,
+        *,
+        x: float,
+        y: float,
+        z: float = 0.0,
+        obstacle_height_m: float = 0.72,
+        cone_base_radius_m: float = 0.20,
+        video_beacon: bool = False,
+    ) -> None:
+        """Place a single visual traffic cone (orange body + white band) at local position (x, y, z).
+
+        video_beacon: when True, scales up the existing UsdGeom.Cone and adds emissive
+        material so it is visible from aerial cameras — no new prim types are introduced,
+        so PhysX behaviour is identical to the normal case.
+        """
+        from pxr import UsdShade
+
+        stage = self.stage
+        mpu = _meters_per_unit(stage)
+
+        # In video mode make the cone taller/wider using only UsdGeom.Cone
+        # (PhysX has no native cone collider so it never gets auto-collision).
+        vis_h = obstacle_height_m * 6.0 if video_beacon else obstacle_height_m
+        vis_r = cone_base_radius_m * 2.5 if video_beacon else cone_base_radius_m
+
+        xform = UsdGeom.Xform.Define(stage, prim_path)
+        UsdGeom.XformCommonAPI(xform).SetTranslate(Gf.Vec3d(x / mpu, y / mpu, z / mpu))
+
+        # Body: orange cone
+        cone_prim_path = f"{prim_path}/Body"
+        cone = UsdGeom.Cone.Define(stage, cone_prim_path)
+        cone.CreateRadiusAttr(float(vis_r / mpu))
+        cone.CreateHeightAttr(float(vis_h / mpu))
+        cone.CreateAxisAttr("Z")
+        UsdGeom.XformCommonAPI(cone).SetTranslate(Gf.Vec3d(0.0, 0.0, float(vis_h * 0.5 / mpu)))
+
+        mat_path = f"{prim_path}/OrangeMat"
+        mat = UsdShade.Material.Define(stage, mat_path)
+        shader = UsdShade.Shader.Define(stage, f"{mat_path}/Shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.95, 0.35, 0.02))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.6)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        if video_beacon:
+            shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1.0, 0.4, 0.0))
+        mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI(cone.GetPrim()).Bind(mat)
+
+        # White reflective band
+        band = UsdGeom.Cylinder.Define(stage, f"{prim_path}/Band")
+        band.CreateRadiusAttr(float(vis_r * 0.65 / mpu))
+        band.CreateHeightAttr(float(0.06 / mpu))
+        band.CreateAxisAttr("Z")
+        UsdGeom.XformCommonAPI(band).SetTranslate(Gf.Vec3d(0.0, 0.0, float(vis_h * 0.55 / mpu)))
+
+        band_mat = UsdShade.Material.Define(stage, f"{prim_path}/WhiteMat")
+        band_shader = UsdShade.Shader.Define(stage, f"{prim_path}/WhiteMat/Shader")
+        band_shader.CreateIdAttr("UsdPreviewSurface")
+        band_shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.95, 0.95, 0.95))
+        band_shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.2)
+        band_mat.CreateSurfaceOutput().ConnectToSource(band_shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI(band.GetPrim()).Bind(band_mat)
+
+    def build_workzone_cones(self, cfg: Dict[str, Any], *, video_obstacle_markers: bool = False) -> None:
+        """Spawn workzone cone prims and write cone XY positions as USD custom metadata.
+
+        Reads ``cfg["zones"]["cones"]`` (list of {x, y, z} world-space dicts) and:
+          1. Places a visual cone USD prim for each cone under <world_root>/WorkzoneCones/.
+          2. Writes ``workzone_cone_positions_xy`` (Vec2fArray) on the world root prim in
+             local stage-unit coordinates so the RL env can load them as a GPU tensor.
+          3. Writes ``workzone_speed_limit_mps`` (float, or -1.0 if absent) on the root prim.
+          4. Reads ``cfg["zones"]["keepout_boxes"]`` (list of box dicts) and writes
+             ``workzone_forbidden_boxes`` (flat FloatArray) on the root prim.
+             Each box: {cx, cy, half_len, half_wid, yaw_rad} stored as 5 floats per box.
+        """
+        wz = cfg.get("zones", None)
+        if not isinstance(wz, dict):
+            return
+
+        stage = self.stage
+        mpu = _meters_per_unit(stage)
+        root_prim = stage.GetPrimAtPath(self.world_root)
+        if not root_prim.IsValid():
+            return
+
+        cones_raw = wz.get("obstacles", []) or []
+        if cones_raw:
+            cones_root_path = f"{self.world_root}/WorkzoneCones"
+            UsdGeom.Xform.Define(stage, cones_root_path)
+
+            obstacle_positions_xy: list[Gf.Vec2f] = []
+            for i, c in enumerate(cones_raw):
+                try:
+                    cx = float(c["x"])
+                    cy = float(c["y"])
+                    cz = float(c.get("z", 0.0))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                lx, ly, lz = self._to_local_xyz(cx, cy, cz)
+                self._spawn_traffic_cone(
+                    f"{cones_root_path}/Cone_{i:04d}",
+                    x=float(lx),
+                    y=float(ly),
+                    z=float(lz),
+                    video_beacon=video_obstacle_markers,
+                )
+                # Store in stage units (matches road_points_m convention; RL env rescales by mpu)
+                obstacle_positions_xy.append(Gf.Vec2f(float(lx) / mpu, float(ly) / mpu))
+
+            if obstacle_positions_xy:
+                root_prim.SetCustomDataByKey("obstacle_positions_xy", Vt.Vec2fArray(obstacle_positions_xy))
+
+        speed_limit = wz.get("speed_limit_mps", None)
+        root_prim.SetCustomDataByKey(
+            "zone_speed_limit_mps",
+            float(speed_limit) if speed_limit is not None else -1.0,
+        )
+
+        # Write forbidden box metadata to USD custom data
+        boxes_raw = wz.get("keepout_boxes", []) or []
+        if boxes_raw:
+            flat_boxes: list[float] = []
+            for b in boxes_raw:
+                try:
+                    # Positions/sizes stored in stage units (divide by mpu); yaw stays in radians
+                    bcx = float(b["cx"]) - float(self._scene_center[0])
+                    bcy = float(b["cy"]) - float(self._scene_center[1])
+                    flat_boxes.extend([
+                        float(bcx) / mpu,
+                        float(bcy) / mpu,
+                        float(b["half_len"]) / mpu,
+                        float(b["half_wid"]) / mpu,
+                        float(b["yaw_rad"]),
+                    ])
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if flat_boxes:
+                root_prim.SetCustomDataByKey("keepout_boxes", Vt.FloatArray(flat_boxes))
 
     # -------- vehicles + parked cars --------
 
@@ -1400,6 +1566,9 @@ class WaymoJsonMiniWorldBuilder:
         vehicle_trigger_offset_m: Tuple[float, float, float] = (0.0, 0.0, 0.0),
         vehicle_trigger_size_m: Tuple[float, float, float] = (1.0, 1.0, 1.0),
         vehicle_trigger_script_enable: bool = True,
+
+        # video visibility
+        video_obstacle_markers: bool = False,  # add tall glowing beacon poles above cones
     ) -> None:
         p = Path(json_path).expanduser().resolve()
         with p.open("r", encoding="utf-8") as f:
@@ -1431,6 +1600,7 @@ class WaymoJsonMiniWorldBuilder:
             allowed_road_types=allowed_road_types,
             road_render_mode=road_render_mode,
         )
+        self.build_workzone_cones(cfg, video_obstacle_markers=video_obstacle_markers)
         self.build_agents_with_goals(
             cfg,
             max_agents=max_agents,
@@ -1525,15 +1695,15 @@ class ChocolateBarConstructor:
         add_floor: bool = False,
         thickness_m: float = 0.2,
         z_m: float = 0.0,
-        color_srgb: Tuple[float, float, float] = (0.15, 0.15, 0.18),
-        emissive_strength: float = 0.05,
+        color_srgb: Tuple[float, float, float] = (0.10, 0.10, 0.12),
+        emissive_strength: float = 0.0,
         add_perimeter_walls: bool = True,
         wall_height_m: float = 3.0,
         wall_thickness_m: float = 0.4,
         add_grid_lines: bool = True,
         line_thickness_m: float = 0.15,
         line_height_m: float = 0.05,
-        line_color_srgb: Tuple[float, float, float] = (0.35, 0.35, 0.4),
+        line_color_srgb: Tuple[float, float, float] = (0.22, 0.22, 0.26),
     ) -> str:
         stage = self.stage
         mpu = _meters_per_unit(stage)
@@ -1609,7 +1779,7 @@ class ChocolateBarConstructor:
             UsdGeom.Xform.Define(stage, lines_root)
             line_mat = _get_or_create_preview_material(stage, root + "/Materials/GridLineMat",
                                                        rgb_srgb=line_color_srgb,
-                                                       emissive_strength=0.08)
+                                                       emissive_strength=0.0)
     
             # vertical lines between columns
             for c in range(1, cols):
@@ -1690,6 +1860,9 @@ class ChocolateBarConstructor:
         vehicle_trigger_script_enable: bool = True,
         allowed_road_types: Optional[Sequence[int]] = None,
         road_render_mode: str = "point_instancer",
+
+        # video visibility
+        video_obstacle_markers: bool = False,
     ) -> None:
         json_list = [str(Path(p).expanduser().resolve()) for p in json_paths]
         if len(json_list) == 0:
@@ -1778,6 +1951,9 @@ class ChocolateBarConstructor:
                 vehicle_trigger_offset_m=vehicle_trigger_offset_m,
                 vehicle_trigger_size_m=vehicle_trigger_size_m,
                 vehicle_trigger_script_enable=vehicle_trigger_script_enable,
+
+                # video
+                video_obstacle_markers=video_obstacle_markers,
             )
         _elapsed = _time.time() - _t0
         print(f"[SceneFactory] Done. Built {_n} worlds in {_elapsed:.1f}s")

@@ -205,21 +205,34 @@ def prepare_stage_world_specs(cfg: Mapping[str, Any]) -> list[StageWorldSpec]:
         return specs
 
     all_jsons = sorted(scene_dir.glob("scene_*.json"))
+    # An EXPLICIT take_first_k_scenes is a hard requirement -- the caller asked
+    # for a specific pool size and silently giving them fewer would change the
+    # experiment. An implicit k (defaulting to world_count) is not: it just
+    # means "as many as needed", and is satisfied by cycling below.
+    explicit_k = "take_first_k_scenes" in io_cfg
     k = int(io_cfg.get("take_first_k_scenes", world_count))
     json_paths = all_jsons[:k]
-    if len(json_paths) < k:
+    if explicit_k and len(json_paths) < k:
         raise RuntimeError(
             f"Found only {len(json_paths)} scene_*.json files in {scene_dir}, wanted {k}"
         )
+    if not json_paths:
+        raise RuntimeError(f"No scene_*.json files found in {scene_dir}")
     if len(json_paths) < world_count:
-        raise RuntimeError(
-            f"Need at least {world_count} scene_*.json files in {scene_dir}, found {len(json_paths)}"
+        # Cycle rather than fail. One Waymo shard yields a few hundred scenes,
+        # so requiring world_count distinct files made any larger world count
+        # impossible without downloading more data. Worlds repeat scenes; scene
+        # diversity is reported separately by the caller.
+        print(
+            f"[INFO][world_pipeline] Only {len(json_paths)} scenes available for "
+            f"{world_count} worlds - cycling scenes to fill all worlds.",
+            flush=True,
         )
     return [
         StageWorldSpec(
             world_index=world_index,
-            scene_json_path=json_paths[world_index],
-            scene_json_name=json_paths[world_index].name,
+            scene_json_path=json_paths[world_index % len(json_paths)],
+            scene_json_name=json_paths[world_index % len(json_paths)].name,
         )
         for world_index in range(world_count)
     ]

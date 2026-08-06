@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# Refuse to push private paths to the PUBLIC remote.
+#
+# The working repo holds the simulator and the research lines together. The
+# public repo must only ever receive the simulator, and it is exported by
+# scripts/release/publish.sh -- never by pushing this repo's branches.
+#
+# This hook is the enforcement; the allowlist in publish.sh is only the policy.
+# Installed by scripts/release/install_hooks.sh.
+#
+# stdin: <local ref> <local sha> <remote ref> <remote sha>
+# argv:  $1 remote name, $2 remote url
+#
+set -uo pipefail
+
+REMOTE_NAME="${1:-}"
+REMOTE_URL="${2:-}"
+
+# Only guard the public repo. Pushing anything to the private `lab` remote is fine.
+case "$REMOTE_URL" in
+  *SmallWorldLab/SceneFactory.git|*SmallWorldLab/SceneFactory|*BrainCrackLab/SceneFactory*) ;;
+  *) exit 0 ;;
+esac
+
+PRIVATE_RE='^(research/|tasks/|data/|logs/)'
+BAD=""
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ "$local_sha" =~ ^0+$ ]] && continue           # branch deletion: nothing to inspect
+
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    # New remote branch: inspect everything it introduces that the remote lacks.
+    files=$(git ls-tree -r --name-only "$local_sha")
+  else
+    files=$(git diff --name-only "$remote_sha" "$local_sha")
+  fi
+
+  # .gitkeep placeholders under data/ are part of the public release: they
+  # create the empty directories a first-time user populates. Everything else
+  # under these prefixes is private.
+  hit=$(printf '%s\n' "$files" | grep -E "$PRIVATE_RE" | grep -v '/\.gitkeep$' || true)
+  if [[ -n "$hit" ]]; then
+    BAD+=$'\n'"  $local_ref -> $remote_ref"$'\n'
+    BAD+=$(printf '%s\n' "$hit" | head -10 | sed 's/^/      /')
+    n=$(printf '%s\n' "$hit" | grep -c . || true)
+    [[ $n -gt 10 ]] && BAD+=$'\n'"      ... and $((n - 10)) more"
+  fi
+done
+
+if [[ -n "$BAD" ]]; then
+  cat >&2 <<EOF
+
+BLOCKED: this push would put private paths on the PUBLIC remote
+         ($REMOTE_NAME -> $REMOTE_URL)
+$BAD
+
+  research/  unpublished research lines
+  tasks/     internal notes, rebuttal record, reviewer correspondence
+  data/      scene data
+  logs/      run output
+
+  The public repo is updated by export, not by pushing branches:
+      bash scripts/release/publish.sh                    # review the manifest
+      bash scripts/release/publish.sh --write DIR --push
+
+  If you genuinely mean to bypass this, use --no-verify -- and read the
+  manifest above first, because a public push cannot be cleanly undone.
+
+EOF
+  exit 1
+fi
+exit 0

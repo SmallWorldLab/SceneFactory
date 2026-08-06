@@ -1,0 +1,179 @@
+# Rebuttal eval — WEATHER sweep of the KNN workzone backbone (model E).
+#
+# Same held-out 199-scene pool as eval_knn_backbone_unseen_multiseed.yaml, but the
+# scene pool is overridden per run (--scene_factory_config) to one of:
+#   eval_unseen_199scenes_dry.yaml      AC 0.0 mm -> mu 1.105 (capped to 1.000)
+#   eval_unseen_199scenes_ac0p4mm.yaml  AC 0.4 mm -> mu 0.904
+#   eval_unseen_199scenes_ac0p8mm.yaml  AC 0.8 mm -> mu 0.804
+#
+# 0.8 mm is the CEILING: TRFC cliffs to mu=0.000 at 0.85 mm on every surface
+# (see tasks/fix_trfc_yr_hydroplaning_cliff.md). Do not add a wetter cell to this
+# sweep until that is fixed -- it would be a frictionless surface, not heavy rain.
+#
+# The conditioned/blinded contrast is --no-obs_weather_context_blind vs
+# --obs_weather_context_blind, i.e. ONE checkpoint evaluated with its weather
+# token either live or pinned to dry-AC. No second model is trained or needed.
+#
+# Protocol fixed at terminating + dataset spawns: that cell showed the tightest
+# across-seed spread (+/-1.0 on SR) in the 2x2, so it gives the best power to
+# detect a small weather effect.
+#
+# Original header follows.
+# ---------------------------------------------------------------------------
+# Rebuttal eval — KNN workzone backbone (model E) on the held-out 199-scene pool.
+#
+# Policy under test:
+#   logs/rsl_rl/waymo_physx_256/2026-06-23_23-51-35_knn_16agents/model_2999.pt
+# This is the checkpoint all three workzone_finetune/*_knn_phase1_backbone runs
+# load as their Phase-1 backbone.  Its sibling (2026-06-17 knn run, identical
+# config bar camera/HUD fields) scored 98.5% on this same pool; model E itself
+# was never evaluated here.
+#
+# Test set: configs/scene_factory/generated/eval_unseen_199scenes_dry.yaml
+#   199 Waymo scenes, all AC / clear / 0.0 mm.  Verified ZERO scene_json overlap
+#   with the 256-scene training pool.  num_envs=64 draws a random 64 of the 199
+#   per run, so varying --scene_factory_random_world_seed gives map-sampling
+#   variance -- that is the multi-seed spread this eval reports.
+#
+# Changes vs eval_waymo_physx_256_knn16agents_unseen_dry.yaml (the June config):
+#   - video.enabled: true -> false.  Video capture is why the June run took
+#     5976 s; metrics-only is far cheaper and nothing here needs footage.
+#   - env_spacing 400 -> 1500.  The multi-agent env always builds a per-env
+#     1000 m ground cuboid (mode="cuboid" is hardcoded), so at 400 m the ground
+#     slabs of neighbouring worlds OVERLAPPED.  1500 m clears them.
+#   - ground_mode stated as cuboid to match what is actually built.
+#
+# Observation block is unchanged and MUST stay that way: knn / k=250 /
+# radius 15 / type_norm 20 / include_dirs / neighbor_k 8 / include_ttc
+# reproduce the backbone's training obs (dim 1317).
+#
+# Driven by scripts/eval_knn_backbone_multiseed.sh (2x2: terminating vs
+# invincible, dataset spawns vs random OD).  Do not launch by hand without
+# setting --invincible/--no-invincible and --random_od/--no-random_od
+# explicitly -- the defaults here are not the protocol.
+#
+env:
+  num_envs: 64
+  num_agents_per_env: 16
+  observation_mode: "choco_reference"
+  env_spacing: 1500.0
+  spawn_height_m: 1.2
+  spawn_yaw_noise_rad: 0.0
+  ground_mode: "cuboid"
+  use_scene_factory_roads: true
+  reset_mode: "teleport_only"
+  start_radius_m: 0.0
+  agent_spawn_circle_radius_m: 0.0
+  agent_spawn_jitter_m: 0.0
+  episode_length_s: 50.0
+  goal_radius_min_m: 5.0
+  goal_radius_max_m: 30.0
+  goal_reached_threshold_m: 3.0
+  fall_height_threshold_m: 0.0
+  bad_tilt_gravity_threshold: -0.15
+  max_distance_from_origin_m: 100.0
+  agent_neighbor_obs_scale_m: 100.0
+  agent_collision_warmup_steps: 24
+  replicate_physics: false
+  clone_in_fabric: "false"
+
+scene_factory:
+  config_path: "configs/scene_factory/generated/eval_unseen_199scenes_dry.yaml"
+  world_index: 0
+  world_selection_mode: "random_envs"
+  random_world_seed: 42
+  use_fabric: false
+
+observation:
+  weather_context_enable: true
+  weather_context_blind: false
+  road_points_enable: true
+  road_points_k: 250
+  road_points_radius_m: 15.0
+  road_points_type_norm: 20.0
+  road_points_mode: "knn"
+  road_points_include_dirs: true
+  neighbor_enable: true
+  neighbor_k: 8
+  neighbor_include_ttc: true
+  neighbor_include_index: false
+  neighbor_ttc_max_s: 10.0
+  timing_print_enable: false
+  timing_print_every_n: 32
+
+timing:
+  step_log_enable: true
+  step_print_enable: false
+  step_print_every_n: 128
+  step_cuda_sync_enable: false
+
+reward:
+  mode: "choco_baseline"
+  goal_bonus: 60.0
+  lane_center_enable: false
+  lane_forbidden_enable: true
+  lane_forbidden_penalty: -20.0
+  collision_penalty: -6.0
+  crash_penalty: -10.0
+  choco_offroad_penalty: -0.5
+  choco_idle_penalty_enable: true
+  choco_idle_penalty_per_step: 0.06
+  choco_idle_speed_threshold_mps: 2.5
+  choco_geom_lane_enable: true
+  choco_geom_lane_per_step: 0.08
+  choco_geom_lane_tolerance_m: 1.75
+  choco_geom_lane_heading_weight: 0.8
+  choco_geom_lane_min_alignment: 0.35
+  choco_geom_route_progress_weight: 4.0
+  choco_geom_offroad_enable: true
+  choco_geom_offroad_lateral_threshold_m: 3.25
+  choco_geom_offroad_distance_threshold_m: 6.0
+  choco_ttc_penalty_enable: true
+  choco_ttc_penalty_alpha: 0.10
+  choco_ttc_penalty_max: 0.35
+  choco_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_penalty_enable: true
+  choco_road_edge_ttc_penalty_alpha: 0.07
+  choco_road_edge_ttc_penalty_max: 0.40
+  choco_road_edge_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_hard_min_ttc: 0.5
+  choco_road_edge_ttc_radius_m: 40.0
+
+video:
+  enabled: false
+  view_mode: "per_env"
+  width: 1920
+  height: 1080
+  fps: 30
+  step_stride: 1
+  vehicle_proxy_markers: true
+  vehicle_proxy_z_offset_m: 0.35
+
+policy:
+  type: "late_fusion"
+  ego_layers: [64, 64]
+  road_layers: [96, 96]
+  vehicle_layers: [96, 96]
+  shared_layers: [128, 64]
+  last_layer_dim_pi: 64
+  last_layer_dim_vf: 64
+  activation: "relu"
+  dropout: 0.0
+  pool: "max"
+
+assets:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
+
+runner:
+  log_dir: "logs/rsl_rl"
+  seed: 42
+  experiment_name: "knn_backbone_weather_eval"
+  run_name: "rebut"
+  shared_policy_mode: "agent_slots"
+  max_iterations: 1
+  num_steps_per_env: 128
+  save_interval: 1
+  learning_rate: 3.0e-4
+  num_learning_epochs: 5
+  num_mini_batches: 4

@@ -79,6 +79,27 @@ config_path = str(Path(pre_args.config).expanduser().resolve())
 file_cfg = _load_yaml_config(config_path)
 _validate_training_config_shape(file_cfg, config_path)
 
+# Keys renamed when obstacles / keep-out regions / zone speed limits stopped
+# being named after the workzone research line.  A stale key is silently
+# ignored by _cfg_value, so say so loudly rather than running with defaults.
+from src.scene_factory_config_compat import warn_on_renamed_keys  # noqa: E402
+
+warn_on_renamed_keys(file_cfg, config_path=config_path)
+
+# Research packages contribute OD modes (and other extensions) by registering on
+# import.  The config names them; the backbone never hard-codes a research module.
+for _plugin in (_cfg_value(file_cfg, "scene_factory", "plugins", []) or []):
+    import importlib
+    try:
+        importlib.import_module(str(_plugin))
+        print(f"[INFO][SceneFactory] loaded plugin {_plugin}", flush=True)
+    except ImportError as _exc:
+        raise SystemExit(
+            f"[FATAL][SceneFactory] config lists plugin {_plugin!r} but it could not be "
+            f"imported: {_exc}. Modes it registers would be missing, and the run would "
+            f"either fail at reset or silently use different spawns."
+        )
+
 parser = argparse.ArgumentParser(
     parents=[pre_parser],
     description="Train a shared-policy PPO controller for the multi-agent student-vehicle goal task using Isaac Lab RSL-RL."
@@ -136,6 +157,21 @@ parser.add_argument(
     "--obs_road_points_include_dirs",
     action=argparse.BooleanOptionalAction,
     default=bool(_cfg_value(file_cfg, "observation", "road_points_include_dirs", False)),
+)
+parser.add_argument(
+    "--obs_obstacle_points_enable",
+    action=argparse.BooleanOptionalAction,
+    default=bool(_cfg_value(file_cfg, "observation", "cone_points_enable", False)),
+)
+parser.add_argument(
+    "--obs_obstacle_points_k",
+    type=int,
+    default=int(_cfg_value(file_cfg, "observation", "cone_points_k", 10)),
+)
+parser.add_argument(
+    "--obs_obstacle_points_radius_m",
+    type=float,
+    default=float(_cfg_value(file_cfg, "observation", "cone_points_radius_m", 50.0)),
 )
 parser.add_argument(
     "--obs_neighbor_enable",
@@ -261,6 +297,14 @@ parser.add_argument("--reward_choco_road_edge_ttc_penalty_max", type=float, defa
 parser.add_argument("--reward_choco_road_edge_ttc_penalty_min_ttc", type=float, default=float(_cfg_value(file_cfg, "reward", "choco_road_edge_ttc_penalty_min_ttc", 0.5)))
 parser.add_argument("--reward_choco_road_edge_ttc_hard_min_ttc", type=float, default=float(_cfg_value(file_cfg, "reward", "choco_road_edge_ttc_hard_min_ttc", 0.5)))
 parser.add_argument("--reward_choco_road_edge_ttc_radius_m", type=float, default=float(_cfg_value(file_cfg, "reward", "choco_road_edge_ttc_radius_m", 40.0)))
+parser.add_argument("--reward_obstacle_penalty_enable", action=argparse.BooleanOptionalAction, default=bool(_cfg_value(file_cfg, "env", "reward_obstacle_penalty_enable", False)))
+parser.add_argument("--reward_obstacle_penalty_alpha", type=float, default=float(_cfg_value(file_cfg, "env", "reward_obstacle_penalty_alpha", 0.20)))
+parser.add_argument("--reward_obstacle_safe_dist_m", type=float, default=float(_cfg_value(file_cfg, "env", "reward_obstacle_safe_dist_m", 1.5)))
+parser.add_argument("--reward_obstacle_collision_dist_m", type=float, default=float(_cfg_value(file_cfg, "env", "reward_obstacle_collision_dist_m", 0.5)))
+parser.add_argument("--reward_obstacle_collision_penalty", type=float, default=float(_cfg_value(file_cfg, "env", "reward_obstacle_collision_penalty", -6.0)))
+parser.add_argument("--reward_keepout_entry_penalty", type=float, default=float(_cfg_value(file_cfg, "env", "reward_keepout_entry_penalty", -5.0)))
+parser.add_argument("--reward_zone_speed_penalty_enable", action=argparse.BooleanOptionalAction, default=bool(_cfg_value(file_cfg, "env", "reward_zone_speed_penalty_enable", False)))
+parser.add_argument("--reward_zone_speed_penalty_beta", type=float, default=float(_cfg_value(file_cfg, "env", "reward_zone_speed_penalty_beta", 0.15)))
 parser.add_argument(
     "--tunable_config_json",
     type=str,
@@ -284,8 +328,12 @@ parser.add_argument(
     "--ground_mode",
     choices=("plane", "cuboid"),
     default=str(_cfg_value(file_cfg, "env", "ground_mode", "plane")),
-    help="Ground implementation for the training scene.",
+    help="Ground implementation for the training scene. NOTE: ground_cuboid_size_m "
+         "and ground_contact_offset_m apply to 'cuboid' only; under 'plane' the "
+         "shared infinite GroundPlane is used and both are ignored.",
 )
+# NOTE: --ground_cuboid_size_m and --ground_contact_offset_m are declared once,
+# with their full help text, further down in the PhysX/ground section.
 parser.add_argument(
     "--apply_runtime_external_wrench",
     action=argparse.BooleanOptionalAction,
@@ -344,6 +392,12 @@ parser.add_argument(
         "scene_factory_policy_eval",
         "friction_ruler",
         "bicycle_sinwave_demo",
+        "physics_validation",
+        "braking_validation",
+        "native_brake_validation",
+        "brake_friction_sweep",
+        "traction_probe",
+        "obs_visualization",
     ),
     default=str(_cfg_value(file_cfg, "test", "mode", "none")),
     help=(
@@ -352,7 +406,9 @@ parser.add_argument(
         "'scene_factory_collision_test' runs the same head-on crash with SceneFactory roads enabled. "
         "'scene_factory_multiworld_random_steer_test' runs multiple SceneFactory worlds with full throttle and "
         "random steering. "
-        "'scene_factory_policy_eval' loads a trained checkpoint and runs one deterministic episode per world."
+        "'scene_factory_policy_eval' loads a trained checkpoint and runs one deterministic episode per world. "
+        "'obs_visualization' steps the env for a few steps and saves a 2-panel figure of the observation "
+        "vector for one agent (see --obs_viz_env_idx, --obs_viz_agent_idx, --obs_viz_warmup_steps)."
     ),
 )
 parser.add_argument(
@@ -374,10 +430,43 @@ parser.add_argument(
     help="For test modes, double the per-world episode horizon before timeout.",
 )
 parser.add_argument(
+    "--obs_viz_env_idx",
+    type=int,
+    default=int(_cfg_value(file_cfg, "test", "obs_viz_env_idx", 0)),
+    help="Environment index to visualize when --test_mode obs_visualization.",
+)
+parser.add_argument(
+    "--obs_viz_agent_idx",
+    type=int,
+    default=int(_cfg_value(file_cfg, "test", "obs_viz_agent_idx", 0)),
+    help="Agent index within the chosen environment for obs_visualization.",
+)
+parser.add_argument(
+    "--obs_viz_warmup_steps",
+    type=int,
+    default=int(_cfg_value(file_cfg, "test", "obs_viz_warmup_steps", 10)),
+    help="Number of warmup steps before capturing the obs in obs_visualization mode.",
+)
+parser.add_argument(
+    "--obs_viz_warmup_action",
+    type=float,
+    nargs=3,
+    default=None,
+    metavar=("THROTTLE", "STEER", "BRAKE"),
+    help="Optional fixed [throttle, steer, brake] action for obs_visualization warmup; default is zero action.",
+)
+parser.add_argument(
     "--invincible",
     action=argparse.BooleanOptionalAction,
     default=bool(_cfg_value(file_cfg, "test", "invincible", False)),
     help="If enabled, crash/collision/forbidden-lane events do not mark vehicles done or clear them out.",
+)
+parser.add_argument(
+    "--eval_with_obstacles",
+    action=argparse.BooleanOptionalAction,
+    default=bool(_cfg_value(file_cfg, "test", "eval_with_obstacles", False)),
+    help="If enabled, register the RandomObstacleDropper during eval/test mode too "
+    "(normally cones are only dropped during training). Requires obstacle_randomize_num>0 in the env config.",
 )
 parser.add_argument(
     "--random_od",
@@ -397,7 +486,35 @@ parser.add_argument(
     default=float(_cfg_value(file_cfg, "test", "random_od_max_travel_m", 60.0)),
     help="Maximum travel distance for randomly sampled OD pairs.",
 )
+parser.add_argument(
+    "--random_steer_test_steering_min",
+    type=float,
+    default=float(_cfg_value(file_cfg, "test", "steering_min", -1.0)),
+    help="Minimum random steering command for scene_factory_multiworld_random_steer_test. "
+         "Use a small magnitude (e.g. -0.1) for a gentle-curve / straight-line speed test.",
+)
+parser.add_argument(
+    "--random_steer_test_steering_max",
+    type=float,
+    default=float(_cfg_value(file_cfg, "test", "steering_max", 1.0)),
+    help="Maximum random steering command for scene_factory_multiworld_random_steer_test. "
+         "Use a small magnitude (e.g. 0.1) for a gentle-curve / straight-line speed test.",
+)
+parser.add_argument(
+    "--random_steer_test_settle_steps",
+    type=int,
+    default=int(_cfg_value(file_cfg, "test", "settle_steps", 24)),
+    help="Steps with zero throttle at episode start before the steer test begins driving. "
+         "Increase (e.g. 48) to let suspension fully settle before recording speed.",
+)
+parser.add_argument(
+    "--random_steer_test_drive_steps",
+    type=int,
+    default=int(_cfg_value(file_cfg, "test", "drive_steps", 600)),
+    help="Steps with full throttle after settle phase. Default 600 (~10s). Use 300 for a 6s run matching teacher rollout length.",
+)
 parser.add_argument("--env_spacing", type=float, default=float(_cfg_value(file_cfg, "env", "env_spacing", 18.0)), help="Spacing between vectorized environments.")
+parser.add_argument("--viewer_distance", type=float, default=0.0, help="Override auto-computed camera distance (m). 0=auto. Useful when running --num_envs 1 with a large-spacing config (e.g. --viewer_distance 40).")
 parser.add_argument("--start_radius_m", type=float, default=float(_cfg_value(file_cfg, "env", "start_radius_m", 0.5)), help="Shared per-world spawn offset radius.")
 parser.add_argument(
     "--agent_spawn_circle_radius_m",
@@ -437,6 +554,65 @@ parser.add_argument(
     type=float,
     default=float(_cfg_value(file_cfg, "env", "max_distance_from_origin_m", 14.0)),
     help="Logical world radius used for out-of-bounds termination.",
+)
+parser.add_argument(
+    "--ground_cuboid_size_m",
+    type=float,
+    default=float(_cfg_value(file_cfg, "env", "ground_cuboid_size_m", 1000.0)),
+    help=(
+        "Side length of each env's ground cuboid. MUST be < env_spacing or the "
+        "slabs overlap, PhysX splits normal force across the stack, and per-env "
+        "friction is averaged over the neighbouring envs instead of applied."
+    ),
+)
+parser.add_argument(
+    "--bicycle_force_invincible",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help=(
+        "Whether dynamics_mode=bicycle forces invincible=True. Default True "
+        "preserves historical behaviour. Pass --no-bicycle_force_invincible to "
+        "keep collision / lane-forbidden / too-far terminations active, which is "
+        "required for a like-for-like comparison against a PhysX policy trained "
+        "with terminations on. Tilt/fall terminations cannot fire under the "
+        "bicycle backend either way (z fixed, pitch/roll zero)."
+    ),
+)
+parser.add_argument(
+    "--bicycle_max_speed_mps",
+    type=float,
+    default=float(_cfg_value(file_cfg, "env", "bicycle_max_speed_mps", 15.0)),
+    help=(
+        "Longitudinal speed parameter. MEANING DIFFERS BY BACKEND: under "
+        "dynamics_mode=bicycle it is a hard, reachable clamp on body speed; under "
+        "physx it is the wheel VELOCITY TARGET (omega = throttle * v / 0.35) and "
+        "the body is traction-limited far below it (measured 4.43 m/s at the 15.0 "
+        "default). Set it per backend -- matching the numbers does NOT match the "
+        "vehicles, and matching the vehicles requires different numbers. Before "
+        "this flag existed the field was only honoured inside test_mode branches, "
+        "so bicycle_max_speed_mps in a training/eval YAML was silently ignored."
+    ),
+)
+parser.add_argument(
+    "--ground_contact_offset_m",
+    type=float,
+    default=float(_cfg_value(file_cfg, "env", "ground_contact_offset_m", 0.10)),
+    help=(
+        "PhysX contact_offset on the ground cuboid. 0.10 was tuned with 1000 m "
+        "slabs overlapping nine deep at env_spacing 400; a single non-overlapping "
+        "slab (ground_cuboid_size_m < env_spacing) loses that contact redundancy "
+        "and needs a wider band or wheels tunnel and lose all normal force."
+    ),
+)
+parser.add_argument(
+    "--wheel_friction_cap",
+    type=float,
+    default=float(_cfg_value(file_cfg, "env", "wheel_friction_cap", 1.0)),
+    help=(
+        "Wheel-side friction ceiling; contact mu = min(ground_mu, this). 1.0 is "
+        "the value baked into the vehicle USD and is a no-op. Raise it to stop "
+        "clipping ground mu above 1.0."
+    ),
 )
 parser.add_argument(
     "--agent_neighbor_obs_scale_m",
@@ -550,9 +726,9 @@ parser.add_argument(
 )
 parser.add_argument(
     "--video_view_mode",
-    choices=("whole_grid", "single_env", "per_env"),
+    choices=("whole_grid", "single_env", "per_env", "composite"),
     default=str(_cfg_value(file_cfg, "video", "view_mode", "whole_grid")),
-    help="Capture either the whole training grid, a single environment, or one video per environment.",
+    help="Capture either the whole training grid, a single environment, one video per environment, or a tiled composite.",
 )
 parser.add_argument(
     "--video_env_index",
@@ -576,8 +752,8 @@ parser.add_argument(
     "--video_camera_pose_mode",
     type=str,
     default=str(_cfg_value(file_cfg, "video", "camera_pose_mode", "top_down")),
-    choices=["top_down", "traffic_cam", "flyover", "flyover_drift"],
-    help="Camera pose mode: top_down (bird's-eye), traffic_cam (tilted, low), or flyover (cinematic rise).",
+    choices=["top_down", "traffic_cam", "flyover", "flyover_drift", "chase", "broadcast"],
+    help="Camera pose mode: top_down, traffic_cam, flyover, flyover_drift, chase, or broadcast.",
 )
 parser.add_argument(
     "--video_traffic_cam_height_m",
@@ -636,6 +812,40 @@ parser.add_argument("--video_drift_start_tilt_deg", type=float, default=25.0, he
 parser.add_argument("--video_drift_rise_tilt_deg", type=float, default=70.0, help="Drift: tilt at top of rise.")
 parser.add_argument("--video_drift_azimuth_deg", type=float, default=0.0, help="Drift: initial viewing direction.")
 parser.add_argument("--video_flyover_azimuth_deg", type=float, default=0.0, help="Flyover: viewing direction.")
+# Chase camera args
+parser.add_argument("--video_chase_agent_index", type=int, default=0, help="Chase: which agent to follow.")
+parser.add_argument("--video_chase_env_index", type=int, default=0, help="Chase: which world env to use.")
+parser.add_argument("--video_chase_distance_m", type=float, default=8.0, help="Chase: meters behind vehicle.")
+parser.add_argument("--video_chase_height_m", type=float, default=2.5, help="Chase: camera height above ground (m).")
+parser.add_argument("--video_chase_look_height_m", type=float, default=0.8, help="Chase: target height camera looks at (m).")
+parser.add_argument("--video_chase_smoothing", type=float, default=0.0, help="Chase: eye position smoothing 0–1.")
+# Broadcast camera args
+parser.add_argument("--video_broadcast_hold_frames", type=int, default=150, help="Broadcast: frames per agent before cutting.")
+parser.add_argument("--video_broadcast_agent_indices", type=str, default="", help="Broadcast: comma-separated agent indices (empty=all).")
+parser.add_argument("--video_broadcast_env_index", type=int, default=0, help="Broadcast: which world env to use.")
+parser.add_argument("--video_broadcast_all_worlds", action="store_true", default=False,
+                    help="Broadcast: rotate through all agents in all worlds (overrides broadcast_env_index).")
+parser.add_argument("--video_broadcast_distance_m", type=float, default=8.0, help="Broadcast: chase distance (m).")
+parser.add_argument("--video_broadcast_height_m", type=float, default=2.5, help="Broadcast: camera height (m).")
+parser.add_argument("--video_broadcast_look_height_m", type=float, default=0.8, help="Broadcast: look-target height (m).")
+# HUD overlay args
+parser.add_argument("--video_hud", action=argparse.BooleanOptionalAction, default=False,
+                    help="Enable HUD overlay: per-vehicle speed coloring, DRAC danger borders, and weather panel.")
+parser.add_argument("--no-video_hud_weather_panel", dest="video_hud_weather_panel", action="store_false", default=True,
+                    help="Disable the corner weather/friction panel in the HUD.")
+parser.add_argument("--no-video_hud_speed_colors", dest="video_hud_speed_colors", action="store_false", default=True,
+                    help="Disable speed-heat vehicle coloring in the HUD.")
+parser.add_argument("--no-video_hud_drac_borders", dest="video_hud_drac_borders", action="store_false", default=True,
+                    help="Disable DRAC danger-level vehicle borders in the HUD.")
+# Composite view args
+parser.add_argument("--video_composite_envs", type=str, default="",
+                    help="Composite mode: comma-separated env indices to tile, e.g. '0,16,32,48'.")
+parser.add_argument("--video_composite_labels", type=str, default="",
+                    help="Composite mode: comma-separated panel labels, e.g. 'Dry,Light rain,Mod rain,Hydro'.")
+parser.add_argument("--video_composite_cols", type=int, default=2,
+                    help="Composite mode: number of tile columns (default 2).")
+parser.add_argument("--video_trail_length", type=int, default=0,
+                    help="Trajectory trail: number of past positions to draw per vehicle (0=off, 60–120 recommended).")
 parser.add_argument(
     "--road_hidden_types",
     type=str,
@@ -647,6 +857,12 @@ parser.add_argument(
     action=argparse.BooleanOptionalAction,
     default=bool(_cfg_value(file_cfg, "video", "hide_goal_markers", False)),
     help="Hide destination beacon visuals for clean video capture.",
+)
+parser.add_argument(
+    "--video_obstacle_markers",
+    action=argparse.BooleanOptionalAction,
+    default=bool(_cfg_value(file_cfg, "video", "video_obstacle_markers", False)),
+    help="Add tall glowing beacon poles above workzone cones for video visibility.",
 )
 parser.add_argument(
     "--resume_from",
@@ -685,6 +901,39 @@ parser.add_argument(
          "E.g. --action_schedule 0:1.0,0.0,0.0 60:1.0,1.0,0.0  means full throttle "
          "straight for 60 steps then full throttle + full steer. Overrides --fixed_action.",
 )
+parser.add_argument(
+    "--repeat_scene",
+    action=argparse.BooleanOptionalAction,
+    default=False,
+    help="Force all envs to use env-0's scene JSON. Use with --friction_ruler_mode for same-scene friction comparison.",
+)
+parser.add_argument(
+    "--video_padding_scale",
+    type=float,
+    default=None,
+    help="Override capture_camera_padding_scale (default 1.35). Larger = more zoomed out. Try 2.5–4.0.",
+)
+parser.add_argument(
+    "--video_capture_span_m",
+    type=float,
+    default=None,
+    help="Top-down capture: frame a fixed span_m x span_m window centered on each env "
+    "origin instead of the whole scene. Zooms in for large scenes. Try 60–90.",
+)
+parser.add_argument(
+    "--friction_ruler_mode",
+    action=argparse.BooleanOptionalAction,
+    default=False,
+    help="Apply per-env friction values from --friction_ruler_mu_values instead of weather estimates. "
+         "Useful for composite weather comparison videos where the same scene runs at multiple μ values.",
+)
+parser.add_argument(
+    "--friction_ruler_mu_values",
+    type=str,
+    default="",
+    help="Comma-separated per-env static friction μ values, e.g. '1.10,0.96,0.83,0.00'. "
+         "Used when --friction_ruler_mode is set.",
+)
 AppLauncher.add_app_launcher_args(parser)
 _device_from_cfg = _cfg_value(file_cfg, "app", "device", None)
 parser.set_defaults(
@@ -692,6 +941,8 @@ parser.set_defaults(
     enable_cameras=bool(_cfg_value(file_cfg, "video", "enabled", False)),
 )
 args_cli = parser.parse_args()
+if bool(getattr(args_cli, "video", False)):
+    args_cli.enable_cameras = True
 
 
 def _configure_headless_camera_environment(args: argparse.Namespace) -> None:
@@ -812,18 +1063,33 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     if cfg.scene.clone_in_fabric and requires_camera_rendering:
         print("[INFO][SceneFactory]: Disabling Fabric cloning for camera/video capture runs.")
         cfg.scene.clone_in_fabric = False
-    grid_extent = max(1.0, math.ceil(math.sqrt(max(1, cfg.scene.num_envs))) * float(cfg.scene.env_spacing))
+    # Grid extent: use (√N - 1) × spacing so a single-env run doesn't inherit a
+    # 400 m camera distance from a config designed for 64 envs at 400 m spacing.
+    _grid_cols = max(1, math.ceil(math.sqrt(max(1, cfg.scene.num_envs))))
+    grid_extent = max(1.0, max(0, _grid_cols - 1) * float(cfg.scene.env_spacing))
     world_extent = max(
         float(args_cli.max_distance_from_origin_m),
         float(args_cli.goal_radius_max_m),
         float(args_cli.agent_spawn_circle_radius_m) + 10.0,
     )
     viewer_extent = max(grid_extent, 1.25 * world_extent)
+    _vd = float(args_cli.viewer_distance)
+    if _vd > 0.0:
+        viewer_extent = _vd
     cfg.viewer.eye = (max(20.0, viewer_extent), max(20.0, viewer_extent), max(16.0, 0.8 * viewer_extent))
     cfg.viewer.lookat = (0.0, 0.0, 0.0)
     cfg.spawn_height_m = float(args_cli.spawn_height_m)
     cfg.spawn_yaw_noise_rad = float(args_cli.spawn_yaw_noise_rad)
     cfg.ground_mode = str(args_cli.ground_mode)
+    cfg.ground_cuboid_size_m = float(args_cli.ground_cuboid_size_m)
+    cfg.ground_contact_offset_m = float(args_cli.ground_contact_offset_m)
+    if str(args_cli.ground_mode).strip().lower() == "plane":
+        print(
+            "[WARN][SceneFactory] ground_mode='plane' uses the shared infinite "
+            "GroundPlane; ground_cuboid_size_m and ground_contact_offset_m are "
+            "IGNORED. The multi-agent contact_offset fix applies to 'cuboid' only.",
+            flush=True,
+        )
     cfg.use_scene_factory_roads = bool(args_cli.use_scene_factory_roads)
     cfg.scene_factory_config_path = str(Path(args_cli.scene_factory_config).expanduser().resolve())
     cfg.scene_factory_world_index = int(args_cli.scene_factory_world_index)
@@ -860,6 +1126,22 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     cfg.fall_height_threshold_m = float(args_cli.fall_height_threshold_m)
     cfg.bad_tilt_gravity_threshold = float(args_cli.bad_tilt_gravity_threshold)
     cfg.max_distance_from_origin_m = float(args_cli.max_distance_from_origin_m)
+    # Previously these two were only wired inside the brake-sweep test-mode branch,
+    # so setting them in a training YAML silently did nothing.
+    cfg.ground_cuboid_size_m = float(args_cli.ground_cuboid_size_m)
+    cfg.ground_contact_offset_m = float(args_cli.ground_contact_offset_m)
+    # Applied for ALL modes. test_mode branches below may still override it.
+    cfg.bicycle_max_speed_mps = float(args_cli.bicycle_max_speed_mps)
+    cfg.wheel_friction_cap = float(args_cli.wheel_friction_cap)
+    if cfg.ground_cuboid_size_m >= float(args_cli.env_spacing):
+        print(
+            f"[WARN][SceneFactory] ground_cuboid_size_m={cfg.ground_cuboid_size_m} >= "
+            f"env_spacing={args_cli.env_spacing}: ground slabs OVERLAP across envs. "
+            f"PhysX will split normal force across the stacked slabs and per-env "
+            f"friction will be averaged over neighbours, not applied. "
+            f"Set ground_cuboid_size_m < env_spacing.",
+            flush=True,
+        )
     cfg.agent_neighbor_obs_scale_m = float(args_cli.agent_neighbor_obs_scale_m)
     cfg.agent_collision_warmup_steps = int(args_cli.agent_collision_warmup_steps)
     cfg.observation_mode = str(args_cli.observation_mode)
@@ -871,6 +1153,9 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     cfg.obs_road_points_type_norm = float(args_cli.obs_road_points_type_norm)
     cfg.obs_road_points_mode = str(args_cli.obs_road_points_mode)
     cfg.obs_road_points_include_dirs = bool(args_cli.obs_road_points_include_dirs)
+    cfg.obs_obstacle_points_enable = bool(args_cli.obs_obstacle_points_enable)
+    cfg.obs_obstacle_points_k = int(args_cli.obs_obstacle_points_k)
+    cfg.obs_obstacle_points_radius_m = float(args_cli.obs_obstacle_points_radius_m)
     cfg.obs_neighbor_enable = bool(args_cli.obs_neighbor_enable)
     cfg.obs_neighbor_k = int(args_cli.obs_neighbor_k)
     cfg.obs_neighbor_include_ttc = bool(args_cli.obs_neighbor_include_ttc)
@@ -918,6 +1203,14 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     cfg.reward_choco_road_edge_ttc_penalty_min_ttc = float(args_cli.reward_choco_road_edge_ttc_penalty_min_ttc)
     cfg.reward_choco_road_edge_ttc_hard_min_ttc = float(args_cli.reward_choco_road_edge_ttc_hard_min_ttc)
     cfg.reward_choco_road_edge_ttc_radius_m = float(args_cli.reward_choco_road_edge_ttc_radius_m)
+    cfg.reward_obstacle_penalty_enable = bool(args_cli.reward_obstacle_penalty_enable)
+    cfg.reward_obstacle_penalty_alpha = float(args_cli.reward_obstacle_penalty_alpha)
+    cfg.reward_obstacle_safe_dist_m = float(args_cli.reward_obstacle_safe_dist_m)
+    cfg.reward_obstacle_collision_dist_m = float(args_cli.reward_obstacle_collision_dist_m)
+    cfg.reward_obstacle_collision_penalty = float(args_cli.reward_obstacle_collision_penalty)
+    cfg.reward_keepout_entry_penalty = float(args_cli.reward_keepout_entry_penalty)
+    cfg.reward_zone_speed_penalty_enable = bool(args_cli.reward_zone_speed_penalty_enable)
+    cfg.reward_zone_speed_penalty_beta = float(args_cli.reward_zone_speed_penalty_beta)
     cfg.test_mode = str(args_cli.test_mode).strip().lower()
     cfg.invincible = bool(args_cli.invincible)
     cfg.random_od = bool(args_cli.random_od)
@@ -938,12 +1231,12 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
         _cfg_value(file_cfg, "test", "post_collision_steering", 0.0)
     )
     cfg.collision_test_post_collision_brake = float(_cfg_value(file_cfg, "test", "post_collision_brake", 1.0))
-    cfg.random_steer_test_settle_steps = int(_cfg_value(file_cfg, "test", "settle_steps", 24))
-    cfg.random_steer_test_drive_steps = int(_cfg_value(file_cfg, "test", "drive_steps", 600))
+    cfg.random_steer_test_settle_steps = int(args_cli.random_steer_test_settle_steps)
+    cfg.random_steer_test_drive_steps = int(args_cli.random_steer_test_drive_steps)
     cfg.random_steer_test_throttle = float(_cfg_value(file_cfg, "test", "throttle", 1.0))
     cfg.random_steer_test_brake = float(_cfg_value(file_cfg, "test", "brake", 0.0))
-    cfg.random_steer_test_steering_min = float(_cfg_value(file_cfg, "test", "steering_min", -1.0))
-    cfg.random_steer_test_steering_max = float(_cfg_value(file_cfg, "test", "steering_max", 1.0))
+    cfg.random_steer_test_steering_min = float(args_cli.random_steer_test_steering_min)
+    cfg.random_steer_test_steering_max = float(args_cli.random_steer_test_steering_max)
     cfg.random_steer_test_steering_hold_steps = int(_cfg_value(file_cfg, "test", "steering_hold_steps", 12))
     cfg.random_steer_test_seed = int(_cfg_value(file_cfg, "test", "seed", 123))
     cfg.capture_camera_enabled = bool(args_cli.video)
@@ -987,10 +1280,36 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     cfg.capture_camera_drift_azimuth_deg = float(args_cli.video_drift_azimuth_deg)
     cfg.vehicle_proxy_marker_enable = bool(args_cli.video_vehicle_proxy_markers)
     cfg.vehicle_proxy_marker_z_offset_m = float(args_cli.video_vehicle_proxy_z_offset_m)
+    # Chase camera
+    cfg.capture_camera_chase_agent_index = int(getattr(args_cli, "video_chase_agent_index", 0))
+    cfg.capture_camera_chase_env_index = int(getattr(args_cli, "video_chase_env_index", 0))
+    cfg.capture_camera_chase_distance_m = float(getattr(args_cli, "video_chase_distance_m", 8.0))
+    cfg.capture_camera_chase_height_m = float(getattr(args_cli, "video_chase_height_m", 2.5))
+    cfg.capture_camera_chase_look_height_m = float(getattr(args_cli, "video_chase_look_height_m", 0.8))
+    cfg.capture_camera_chase_smoothing = float(getattr(args_cli, "video_chase_smoothing", 0.0))
+    # Broadcast camera
+    cfg.capture_camera_broadcast_hold_frames = int(getattr(args_cli, "video_broadcast_hold_frames", 150))
+    cfg.capture_camera_broadcast_agent_indices = str(getattr(args_cli, "video_broadcast_agent_indices", ""))
+    cfg.capture_camera_broadcast_env_index = int(getattr(args_cli, "video_broadcast_env_index", 0))
+    cfg.capture_camera_broadcast_all_worlds = bool(getattr(args_cli, "video_broadcast_all_worlds", False))
+    cfg.capture_camera_broadcast_distance_m = float(getattr(args_cli, "video_broadcast_distance_m", 8.0))
+    cfg.capture_camera_broadcast_height_m = float(getattr(args_cli, "video_broadcast_height_m", 2.5))
+    cfg.capture_camera_broadcast_look_height_m = float(getattr(args_cli, "video_broadcast_look_height_m", 0.8))
+    # HUD overlay
+    cfg.capture_camera_hud_enabled = bool(getattr(args_cli, "video_hud", False))
+    cfg.capture_camera_hud_weather_panel = bool(getattr(args_cli, "video_hud_weather_panel", True))
+    cfg.capture_camera_hud_speed_colors = bool(getattr(args_cli, "video_hud_speed_colors", True))
+    cfg.capture_camera_hud_drac_borders = bool(getattr(args_cli, "video_hud_drac_borders", True))
+    # Composite mode
+    cfg.capture_camera_composite_env_indices = str(getattr(args_cli, "video_composite_envs", ""))
+    cfg.capture_camera_composite_labels = str(getattr(args_cli, "video_composite_labels", ""))
+    cfg.capture_camera_composite_cols = int(getattr(args_cli, "video_composite_cols", 2))
+    cfg.capture_camera_trail_length = int(getattr(args_cli, "video_trail_length", 0))
     # Road type visual hiding (still in scene for obs/physics)
     _rht = str(args_cli.road_hidden_types).strip()
     cfg.road_hidden_types = [int(x) for x in _rht.split(",") if x.strip()] if _rht else None
     cfg.hide_goal_markers = bool(args_cli.hide_goal_markers)
+    cfg.video_obstacle_markers = bool(args_cli.video_obstacle_markers)
     cfg.student_usd_path = str(Path(args_cli.student_usd or DEFAULT_STUDENT_VEHICLE_USD).expanduser().resolve())
     if str(args_cli.tunable_config_json):
         cfg.tunable_config_json = str(Path(args_cli.tunable_config_json).expanduser().resolve())
@@ -1024,9 +1343,6 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
             print("[INFO][SceneFactory] scene_factory_collision_test enables Fabric for headless vehicle video capture.")
         cfg.sim.use_fabric = True if bool(args_cli.video) else bool(args_cli.use_fabric)
     elif cfg.test_mode == "scene_factory_multiworld_random_steer_test":
-        if not cfg.use_scene_factory_roads:
-            print("[INFO][SceneFactory] scene_factory_multiworld_random_steer_test enables SceneFactory roads.")
-        cfg.use_scene_factory_roads = True
         if bool(args_cli.video) and not bool(args_cli.use_fabric):
             print(
                 "[INFO][SceneFactory] scene_factory_multiworld_random_steer_test enables Fabric "
@@ -1047,14 +1363,92 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
             print("[INFO][SceneFactory] bicycle_sinwave_demo enables Fabric for headless video capture.")
         cfg.sim.use_fabric = True if bool(args_cli.video) else bool(args_cli.use_fabric)
         print("[INFO][SceneFactory] bicycle_sinwave_demo: dynamics_mode=bicycle, invincible=True", flush=True)
+    elif cfg.test_mode == "physics_validation":
+        cfg.use_scene_factory_roads = False
+        cfg.friction_ruler_mode = True
+        cfg.friction_ruler_mu_values = str(_cfg_value(file_cfg, "env", "friction_ruler_mu_values",
+                                                       "1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.10,0.25,0.40,0.60,0.85"))
+        _pv_max_speed = _cfg_value(file_cfg, "env", "bicycle_max_speed_mps", None)
+        if _pv_max_speed is not None:
+            cfg.bicycle_max_speed_mps = float(_pv_max_speed)
+        print("[INFO][PhysicsValidation] friction_ruler_mode=True, roads disabled, "
+              f"mu_values={cfg.friction_ruler_mu_values}", flush=True)
+    elif cfg.test_mode == "braking_validation":
+        cfg.use_scene_factory_roads = False
+        cfg.friction_ruler_mode = True
+        cfg.friction_ruler_mu_values = str(_cfg_value(file_cfg, "env", "friction_ruler_mu_values",
+                                                       "0.30,0.40,0.50,0.60,0.66,0.70,0.86,1.00,1.10"))
+        _bv_max_speed = _cfg_value(file_cfg, "env", "bicycle_max_speed_mps", 30.0)
+        cfg.bicycle_max_speed_mps = float(_bv_max_speed)
+        # Scripted physics test: never terminate/auto-reset the car on tilt/fall/etc.
+        # (Otherwise a high-speed run tips past the tilt threshold and re-parks at
+        # origin, which looks like the car "failing to accelerate".)
+        cfg.invincible = True
+        print("[INFO][BrakingValidation] friction_ruler_mode=True, roads disabled, "
+              f"invincible=True, mu_values={cfg.friction_ruler_mu_values}, "
+              f"bicycle_max_speed_mps={cfg.bicycle_max_speed_mps}", flush=True)
+    elif cfg.test_mode == "native_brake_validation":
+        cfg.use_scene_factory_roads = False
+        cfg.friction_ruler_mode = True
+        cfg.friction_ruler_mu_values = str(_cfg_value(file_cfg, "env", "friction_ruler_mu_values",
+                                                       "0.90,0.50"))
+        cfg.bicycle_max_speed_mps = float(_cfg_value(file_cfg, "env", "bicycle_max_speed_mps", 19.5))
+        # Scripted physics test: never terminate/auto-reset the car on tilt/fall.
+        cfg.invincible = True
+        print("[INFO][NativeBrake] friction_ruler_mode=True, roads disabled, invincible=True, "
+              f"mu_values={cfg.friction_ruler_mu_values} (dry,wet), "
+              f"bicycle_max_speed_mps={cfg.bicycle_max_speed_mps}", flush=True)
+    elif cfg.test_mode == "brake_friction_sweep":
+        cfg.use_scene_factory_roads = False
+        cfg.friction_ruler_mode = True
+        cfg.friction_ruler_mu_values = str(_cfg_value(file_cfg, "env", "friction_ruler_mu_values",
+                                                       "1.0,0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1"))
+        cfg.bicycle_max_speed_mps = float(_cfg_value(file_cfg, "env", "bicycle_max_speed_mps", 19.5))
+        cfg.ground_cuboid_size_m = float(_cfg_value(file_cfg, "env", "ground_cuboid_size_m", 1000.0))
+        cfg.invincible = True
+        print("[INFO][BrakeSweep] friction_ruler_mode=True, roads disabled, invincible=True, "
+              f"mu_values={cfg.friction_ruler_mu_values}, "
+              f"ground_cuboid_size_m={cfg.ground_cuboid_size_m}, "
+              f"bicycle_max_speed_mps={cfg.bicycle_max_speed_mps}", flush=True)
+    elif cfg.test_mode == "traction_probe":
+        # Deliberately changes NOTHING about the environment except disabling
+        # termination.  The whole point is to observe the training spawn path
+        # exactly as training sees it: roads on, real scene pool, real
+        # multi-agent spawn, real ground and friction.  invincible=True only
+        # stops a tipped/drifted car being teleported back to spawn mid-probe,
+        # which would corrupt the displacement measurement.
+        cfg.invincible = True
+        print("[INFO][TractionProbe] env UNCHANGED except invincible=True. "
+              f"ground_cuboid_size_m={getattr(cfg, 'ground_cuboid_size_m', None)}, "
+              f"ground_contact_offset_m={getattr(cfg, 'ground_contact_offset_m', None)}, "
+              f"wheel_friction_cap={getattr(cfg, 'wheel_friction_cap', None)}", flush=True)
     elif cfg.test_mode == "friction_ruler":
         cfg.use_scene_factory_roads = False
         cfg.friction_ruler_mode = True
         cfg.friction_ruler_mu_values = str(_cfg_value(file_cfg, "env", "friction_ruler_mu_values", "1.1,0.6,0.3,0.1"))
         cfg.friction_ruler_labels = str(_cfg_value(file_cfg, "env", "friction_ruler_labels", ""))
+        # Default to full-throttle scripted action when no checkpoint is provided.
+        if args_cli.fixed_action is None and args_cli.action_schedule is None and not str(getattr(args_cli, "checkpoint_path", "")).strip():
+            args_cli.fixed_action = [1.0, 0.0, 0.0]
+            print("[INFO][FrictionRuler] No checkpoint — using fixed_action=[1.0, 0.0, 0.0] (full throttle).", flush=True)
         print(
             f"[INFO][FrictionRuler] friction_ruler mode: roads disabled, "
             f"mu_values={cfg.friction_ruler_mu_values}",
+            flush=True,
+        )
+    elif cfg.test_mode == "obs_visualization":
+        # obs_visualization boots the env with roads enabled so that road points are
+        # populated in the observation.  Keep all other settings as configured so the
+        # visualization reflects real training conditions.
+        if not cfg.use_scene_factory_roads:
+            print("[INFO][ObsViz] obs_visualization enables SceneFactory roads.")
+        cfg.use_scene_factory_roads = True
+        cfg.invincible = True   # avoid early termination during warmup steps
+        print(
+            f"[INFO][ObsViz] obs_visualization mode: roads enabled, invincible=True, "
+            f"env_idx={getattr(args_cli, 'obs_viz_env_idx', 0)} "
+            f"agent_idx={getattr(args_cli, 'obs_viz_agent_idx', 0)} "
+            f"warmup_steps={getattr(args_cli, 'obs_viz_warmup_steps', 10)}",
             flush=True,
         )
     configure_multi_agent_spaces(cfg, int(args_cli.num_agents_per_env))
@@ -1062,12 +1456,48 @@ def _build_env_cfg() -> StudentVehicleMultiAgentGoalEnvCfg:
     # ── Dynamics mode (bicycle overrides physx for any run mode) ──
     if str(args_cli.dynamics_mode) == "bicycle" and cfg.test_mode != "bicycle_sinwave_demo":
         cfg.dynamics_mode = "bicycle"
-        cfg.invincible = True  # no roll/flip physics in bicycle mode
-        print("[INFO][SceneFactory] dynamics_mode=bicycle: kinematic bicycle model active, invincible=True", flush=True)
+        # Historically this ALWAYS forced invincible=True, rationale "no roll/flip
+        # physics in bicycle mode". That rationale is already satisfied by the
+        # kinematics: _apply_action_bicycle holds z fixed and keeps pitch/roll at
+        # zero, so crash_too_low and crash_bad_tilt can never fire regardless.
+        # But invincible also disables COLLISION, LANE-FORBIDDEN and TOO-FAR
+        # termination, which are perfectly well defined here -- so the blanket
+        # override silently trained every bicycle policy with no crash penalty at
+        # all, while its PhysX counterpart trained with terminations on. That is a
+        # confound in any physx-vs-bicycle comparison, not a modelling necessity.
+        # Default stays True for backward compatibility with existing scripts.
+        if bool(args_cli.bicycle_force_invincible):
+            cfg.invincible = True
+            print("[INFO][SceneFactory] dynamics_mode=bicycle: kinematic model active, "
+                  "invincible=True (forced; pass --no-bicycle_force_invincible to keep "
+                  "collision/lane/too-far terminations)", flush=True)
+        else:
+            print(f"[INFO][SceneFactory] dynamics_mode=bicycle: kinematic model active, "
+                  f"invincible={bool(cfg.invincible)} (NOT forced -- collision, "
+                  f"lane-forbidden and too-far terminations remain active; tilt/fall "
+                  f"cannot fire in this backend anyway)", flush=True)
 
     # ── Scripted action overrides (from config YAML) ──
     cfg.fixed_action = str(_cfg_value(file_cfg, "env", "fixed_action", ""))
     cfg.action_schedule = str(_cfg_value(file_cfg, "env", "action_schedule", ""))
+
+    # ── Friction ruler CLI override (for composite weather comparison videos) ──
+    if bool(getattr(args_cli, "friction_ruler_mode", False)):
+        cfg.friction_ruler_mode = True
+        mu_raw = str(getattr(args_cli, "friction_ruler_mu_values", "")).strip()
+        if mu_raw:
+            cfg.friction_ruler_mu_values = mu_raw
+
+    if bool(getattr(args_cli, "repeat_scene", False)):
+        cfg.repeat_first_scene = True
+
+    _pad = getattr(args_cli, "video_padding_scale", None)
+    if _pad is not None:
+        cfg.capture_camera_padding_scale = float(_pad)
+
+    _span = getattr(args_cli, "video_capture_span_m", None)
+    if _span is not None:
+        cfg.capture_camera_fixed_span_m = float(_span)
 
     return cfg
 
@@ -1201,6 +1631,9 @@ def _build_resolved_config(
             "road_points_type_norm": float(env_cfg.obs_road_points_type_norm),
             "road_points_mode": str(env_cfg.obs_road_points_mode),
             "road_points_include_dirs": bool(env_cfg.obs_road_points_include_dirs),
+            "cone_points_enable": bool(env_cfg.obs_obstacle_points_enable),
+            "cone_points_k": int(env_cfg.obs_obstacle_points_k),
+            "cone_points_radius_m": float(env_cfg.obs_obstacle_points_radius_m),
             "neighbor_enable": bool(env_cfg.obs_neighbor_enable),
             "neighbor_k": int(env_cfg.obs_neighbor_k),
             "neighbor_include_ttc": bool(env_cfg.obs_neighbor_include_ttc),
@@ -1252,6 +1685,14 @@ def _build_resolved_config(
             "choco_road_edge_ttc_penalty_min_ttc": float(env_cfg.reward_choco_road_edge_ttc_penalty_min_ttc),
             "choco_road_edge_ttc_hard_min_ttc": float(env_cfg.reward_choco_road_edge_ttc_hard_min_ttc),
             "choco_road_edge_ttc_radius_m": float(env_cfg.reward_choco_road_edge_ttc_radius_m),
+            "workzone_cone_penalty_enable": bool(env_cfg.reward_obstacle_penalty_enable),
+            "workzone_cone_penalty_alpha": float(env_cfg.reward_obstacle_penalty_alpha),
+            "workzone_cone_safe_dist_m": float(env_cfg.reward_obstacle_safe_dist_m),
+            "workzone_cone_collision_dist_m": float(env_cfg.reward_obstacle_collision_dist_m),
+            "workzone_cone_collision_penalty": float(env_cfg.reward_obstacle_collision_penalty),
+            "workzone_box_entry_penalty": float(env_cfg.reward_keepout_entry_penalty),
+            "workzone_speed_penalty_enable": bool(env_cfg.reward_zone_speed_penalty_enable),
+            "workzone_speed_penalty_beta": float(env_cfg.reward_zone_speed_penalty_beta),
         },
         "policy": policy_cfg,
         "test": {
@@ -1320,6 +1761,36 @@ def _build_resolved_config(
     }
 
 
+def _get_git_info() -> dict:
+    """Return git commit hash and dirty-status for the repo containing this file."""
+    import subprocess
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        dirty_files = subprocess.check_output(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return {"commit": commit, "dirty": bool(dirty_files), "dirty_files": dirty_files.splitlines()}
+    except Exception as exc:  # noqa: BLE001
+        return {"commit": None, "dirty": None, "dirty_files": [], "error": str(exc)}
+
+
+def _write_outcome(run_dir: Path, *, status: str, wall_time_s: float, checkpoints: list[str], error: str | None = None) -> None:
+    """Write outcome.json after a run completes or crashes."""
+    payload = {
+        "status": status,           # "success" | "error" | "interrupted"
+        "wall_time_s": round(wall_time_s, 2),
+        "checkpoints": checkpoints,
+        "error": error,
+    }
+    (run_dir / "outcome.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    print(f"[INFO][SceneFactory] Outcome written to {run_dir / 'outcome.json'} (status={status})", flush=True)
+
+
 def _write_run_metadata(run_dir: Path, env_cfg: StudentVehicleMultiAgentGoalEnvCfg, runner_cfg: RslRlOnPolicyRunnerCfg):
     (run_dir / "params").mkdir(parents=True, exist_ok=True)
     resolved_cfg = _build_resolved_config(env_cfg, runner_cfg)
@@ -1333,6 +1804,7 @@ def _write_run_metadata(run_dir: Path, env_cfg: StudentVehicleMultiAgentGoalEnvC
     payload = {
         "config_path": str(Path(args_cli.config).expanduser().resolve()),
         "command": sys.orig_argv,
+        "git": _get_git_info(),
         "env_cfg": {
             "num_envs": env_cfg.scene.num_envs,
             "num_agents_per_env": env_cfg.num_agents_per_env,
@@ -1388,6 +1860,9 @@ def _write_run_metadata(run_dir: Path, env_cfg: StudentVehicleMultiAgentGoalEnvC
             "obs_road_points_type_norm": env_cfg.obs_road_points_type_norm,
             "obs_road_points_mode": env_cfg.obs_road_points_mode,
             "obs_road_points_include_dirs": env_cfg.obs_road_points_include_dirs,
+            "obs_obstacle_points_enable": env_cfg.obs_obstacle_points_enable,
+            "obs_obstacle_points_k": env_cfg.obs_obstacle_points_k,
+            "obs_obstacle_points_radius_m": env_cfg.obs_obstacle_points_radius_m,
             "obs_neighbor_enable": env_cfg.obs_neighbor_enable,
             "obs_neighbor_k": env_cfg.obs_neighbor_k,
             "obs_neighbor_include_ttc": env_cfg.obs_neighbor_include_ttc,
@@ -1434,6 +1909,11 @@ def _write_run_metadata(run_dir: Path, env_cfg: StudentVehicleMultiAgentGoalEnvC
             "reward_choco_road_edge_ttc_penalty_min_ttc": env_cfg.reward_choco_road_edge_ttc_penalty_min_ttc,
             "reward_choco_road_edge_ttc_hard_min_ttc": env_cfg.reward_choco_road_edge_ttc_hard_min_ttc,
             "reward_choco_road_edge_ttc_radius_m": env_cfg.reward_choco_road_edge_ttc_radius_m,
+            "reward_obstacle_penalty_enable": env_cfg.reward_obstacle_penalty_enable,
+            "reward_obstacle_penalty_alpha": env_cfg.reward_obstacle_penalty_alpha,
+            "reward_obstacle_safe_dist_m": env_cfg.reward_obstacle_safe_dist_m,
+            "reward_zone_speed_penalty_enable": env_cfg.reward_zone_speed_penalty_enable,
+            "reward_zone_speed_penalty_beta": env_cfg.reward_zone_speed_penalty_beta,
         },
         "runner_cfg": {
             **runner_cfg.to_dict(),
@@ -2172,6 +2652,12 @@ def _run_scene_factory_multiworld_random_steer_test(env: StudentVehicleMultiAgen
     worlds_with_collision: set[int] = set()
     lane_types_touched_global: set[int] = set()
     current_steering = torch.zeros((env._num_agents, env.num_envs), dtype=torch.float32, device=env.device)
+    # Physics sanity accumulators — collected every step for the summary
+    _phys_speeds_all: list[float] = []          # planar speed samples from all agents/envs/steps
+    _phys_z_all: list[float] = []               # root Z samples
+    _phys_max_speed = 0.0
+    _phys_min_z = float("inf")
+    _phys_max_z = float("-inf")
 
     with metrics_path.open("w", encoding="utf-8") as handle:
         for step in range(total_steps):
@@ -2234,10 +2720,17 @@ def _run_scene_factory_multiworld_random_steer_test(env: StudentVehicleMultiAgen
                     root_lin_vel_w = vehicle.data.root_lin_vel_w[env_idx]
                     lane_types = list(lane_touch_types_by_agent.get(agent_id, [[]])[env_idx])
                     lane_types_touched_global.update(int(t) for t in lane_types)
+                    spd = float(torch.linalg.norm(root_lin_vel_w[:2]).item())
+                    z = float(root_pos_w[2].item())
+                    _phys_speeds_all.append(spd)
+                    _phys_z_all.append(z)
+                    _phys_max_speed = max(_phys_max_speed, spd)
+                    _phys_min_z = min(_phys_min_z, z)
+                    _phys_max_z = max(_phys_max_z, z)
                     env_record["agents"][agent_id] = {
                         "root_pos_w": [float(x) for x in root_pos_w.detach().cpu().tolist()],
                         "root_lin_vel_w": [float(x) for x in root_lin_vel_w.detach().cpu().tolist()],
-                        "planar_speed_mps": float(torch.linalg.norm(root_lin_vel_w[:2]).item()),
+                        "planar_speed_mps": spd,
                         "goal_distance_m": float(env._current_goal_distance[agent_idx, env_idx].item()),
                         "collision_force_n": float(collision_force_by_agent[agent_id][env_idx].item()),
                         "lane_touch_types": lane_types,
@@ -2266,13 +2759,31 @@ def _run_scene_factory_multiworld_random_steer_test(env: StudentVehicleMultiAgen
         "metrics_path": str(metrics_path),
         "video_path": str(video_path) if bool(args_cli.video) else "",
         "config_path": str(Path(args_cli.config).expanduser().resolve()),
+        # --- Physics sanity block ---
+        # These numbers let you verify that vehicle dynamics are plausible without
+        # needing to watch the sim:
+        #   max_planar_speed_mps: should be ~15-25 m/s at full throttle (not 0, not 300)
+        #   mean_planar_speed_mps: should be well above 0 during the drive phase
+        #   root_z_min_m / root_z_max_m: should be near spawn_height_m, not drifting meters
+        #   root_z_range_m: large range => vehicle is bouncing or flying; near-zero => grounded
+        "physics_sanity": {
+            "max_planar_speed_mps": round(_phys_max_speed, 3),
+            "mean_planar_speed_mps": round(sum(_phys_speeds_all) / max(1, len(_phys_speeds_all)), 3),
+            "root_z_min_m": round(_phys_min_z, 4) if _phys_min_z != float("inf") else None,
+            "root_z_max_m": round(_phys_max_z, 4) if _phys_max_z != float("-inf") else None,
+            "root_z_range_m": round(_phys_max_z - _phys_min_z, 4) if _phys_speeds_all else None,
+            "speed_samples": int(len(_phys_speeds_all)),
+        },
     }
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(
         f"[INFO][SceneFactory] {test_mode_name} finished. "
         f"world_collision_count={summary['world_collision_count']} "
         f"max_force_n={summary['max_collision_force_n']:.2f} "
-        f"lane_types={summary['lane_types_touched_global']}",
+        f"lane_types={summary['lane_types_touched_global']} | "
+        f"physics: max_speed={summary['physics_sanity']['max_planar_speed_mps']} m/s "
+        f"mean_speed={summary['physics_sanity']['mean_planar_speed_mps']} m/s "
+        f"z_range={summary['physics_sanity']['root_z_range_m']} m",
         flush=True,
     )
 
@@ -2308,7 +2819,9 @@ def _run_scene_factory_policy_eval(
     video_step_stride = max(1, int(args_cli.video_step_stride))
     video_writer = None
     video_writers_per_env: list = []  # for per_env mode
-    is_per_env_video = str(args_cli.video_view_mode).strip().lower() == "per_env"
+    _view_mode_str = str(args_cli.video_view_mode).strip().lower()
+    is_per_env_video = _view_mode_str == "per_env"
+    is_composite_video = _view_mode_str == "composite"
     if bool(args_cli.video):
         video_path.parent.mkdir(parents=True, exist_ok=True)
         if is_per_env_video:
@@ -2336,7 +2849,10 @@ def _run_scene_factory_policy_eval(
                     writer.append_data(frame)
                     frames_written += 1
         elif video_writer is not None:
-            frame = base_env.capture_fixed_camera_frame()
+            if is_composite_video:
+                frame = base_env.capture_composite_frame()
+            else:
+                frame = base_env.capture_fixed_camera_frame()
             if frame is not None:
                 video_writer.append_data(frame)
                 frames_written += 1
@@ -2488,7 +3004,7 @@ def _run_scene_factory_policy_eval(
                 }
                 steps_handle.write(json.dumps(step_record) + "\n")
 
-                if len(completed_worlds) >= int(base_env.num_envs):
+                if len(completed_worlds) >= int(base_env.num_envs) and int(args_cli.eval_max_steps) <= 0:
                     break
 
     if video_writer is not None:
@@ -2518,6 +3034,29 @@ def _run_scene_factory_policy_eval(
     near_miss_rate = float(sum(float(item["near_miss_rate"]) for item in _ttc_worlds) / max(1, len(_ttc_worlds))) if _ttc_worlds else -1.0
     mean_max_drac = float(sum(float(item["mean_max_drac"]) for item in _ttc_worlds) / max(1, len(_ttc_worlds))) if _ttc_worlds else -1.0
     high_drac_rate = float(sum(float(item["high_drac_rate"]) for item in _ttc_worlds) / max(1, len(_ttc_worlds))) if _ttc_worlds else -1.0
+    _zone_worlds = [item for item in completed_items if float(item.get("obstacle_near_miss_rate", -1.0)) >= 0.0]
+    obstacle_near_miss_rate = (
+        float(sum(float(item.get("obstacle_near_miss_rate", 0.0)) for item in _zone_worlds) / max(1, len(_zone_worlds)))
+        if _zone_worlds
+        else -1.0
+    )
+    speed_violation_rate = (
+        float(sum(float(item.get("speed_violation_rate", 0.0)) for item in _zone_worlds) / max(1, len(_zone_worlds)))
+        if _zone_worlds
+        else -1.0
+    )
+    _box_worlds = [item for item in completed_items if float(item.get("box_entry_rate", -1.0)) >= 0.0]
+    box_entry_rate = (
+        float(sum(float(item.get("box_entry_rate", 0.0)) for item in _box_worlds) / max(1, len(_box_worlds)))
+        if _box_worlds
+        else -1.0
+    )
+    total_box_entry_count = float(sum(float(item.get("box_entry_count", 0.0)) for item in _box_worlds)) if _box_worlds else -1.0
+    box_ever_entered_rate = (
+        float(sum(float(item.get("box_ever_entered_rate", 0.0)) for item in _box_worlds) / max(1, len(_box_worlds)))
+        if _box_worlds
+        else -1.0
+    )
     per_world_summary_sorted = sorted(
         [
             {
@@ -2540,6 +3079,11 @@ def _run_scene_factory_policy_eval(
                 "near_miss_rate": float(item.get("near_miss_rate", -1.0)),
                 "mean_max_drac": float(item.get("mean_max_drac", -1.0)),
                 "high_drac_rate": float(item.get("high_drac_rate", -1.0)),
+                "obstacle_near_miss_rate": float(item.get("obstacle_near_miss_rate", -1.0)),
+                "speed_violation_rate": float(item.get("speed_violation_rate", -1.0)),
+                "box_entry_rate": float(item.get("box_entry_rate", -1.0)),
+                "box_entry_count": float(item.get("box_entry_count", -1.0)),
+                "box_ever_entered_rate": float(item.get("box_ever_entered_rate", -1.0)),
             }
             for item in completed_items
         ],
@@ -2587,6 +3131,11 @@ def _run_scene_factory_policy_eval(
         "near_miss_rate": float(near_miss_rate),
         "mean_max_drac": float(mean_max_drac),
         "high_drac_rate": float(high_drac_rate),
+        "obstacle_near_miss_rate": float(obstacle_near_miss_rate),
+        "speed_violation_rate": float(speed_violation_rate),
+        "box_entry_rate": float(box_entry_rate),
+        "total_box_entry_count": float(total_box_entry_count),
+        "box_ever_entered_rate": float(box_ever_entered_rate),
         "steps_path": str(steps_path),
         "worlds_path": str(worlds_path),
         "video_path": str(video_path) if bool(args_cli.video) else "",
@@ -2598,6 +3147,7 @@ def _run_scene_factory_policy_eval(
     }
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     _ttc_str = f" mean_min_ttc={summary['mean_min_ttc_s']:.2f}s near_miss_rate={summary['near_miss_rate']:.3f} mean_max_drac={summary['mean_max_drac']:.3f}m/s² high_drac_rate={summary['high_drac_rate']:.3f}" if summary['mean_min_ttc_s'] >= 0.0 else ""
+    _wz_str = f" obstacle_near_miss_rate={summary['obstacle_near_miss_rate']:.3f} speed_violation_rate={summary['speed_violation_rate']:.3f} box_ever_entered_rate={summary['box_ever_entered_rate']:.3f} box_entry_rate={summary['box_entry_rate']:.3f}" if summary['obstacle_near_miss_rate'] >= 0.0 else ""
     print(
         f"[INFO][SceneFactory] {test_mode_name} finished. "
         f"completed_worlds={summary['completed_world_count']}/{summary['expected_world_count']} "
@@ -2605,7 +3155,8 @@ def _run_scene_factory_policy_eval(
         f"collision_rate={summary['collision_rate']:.3f} "
         f"lane_forbidden_rate={summary['lane_forbidden_rate']:.3f} "
         f"crash_rate={summary['crash_rate']:.3f}"
-        f"{_ttc_str}",
+        f"{_ttc_str}"
+        f"{_wz_str}",
         flush=True,
     )
     if per_world_summary_sorted:
@@ -2625,6 +3176,29 @@ def _run_scene_factory_policy_eval(
                 f"steps={item['episode_length_steps']}",
                 flush=True,
             )
+
+
+def _reset_obs_normalizer(policy) -> None:
+    """Reset obs normalizer to neutral state (mean=0, var=1, std=1).
+
+    When fine-tuning from a checkpoint trained on a different scene distribution
+    some normalizer dims may have std≈0 (features that were always constant).
+    Applying those stats to new obs causes 100× blow-up → NaN → training crash.
+    Resetting to neutral lets the normalizer re-adapt in the new domain.
+    """
+    import torch
+
+    for attr in ("actor_obs_normalizer", "critic_obs_normalizer"):
+        norm = getattr(policy, attr, None)
+        if norm is None or not hasattr(norm, "_mean"):
+            continue
+        with torch.no_grad():
+            norm._mean.zero_()
+            norm._var.fill_(1.0)
+            norm._std.fill_(1.0)
+            if hasattr(norm, "count"):
+                norm.count.zero_()
+    print("[INFO][SceneFactory] Obs normalizer reset to neutral for fine-tuning.", flush=True)
 
 
 def main():
@@ -2662,6 +3236,79 @@ def main():
         finally:
             base_env.close()
             print(f"[INFO] Bicycle sinwave demo finished in {time.time() - start_time:.2f}s")
+        return
+    if str(args_cli.test_mode).strip().lower() == "physics_validation":
+        from src.physics_validation import run_physics_validation
+        try:
+            run_physics_validation(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Physics validation finished in {time.time() - start_time:.2f}s")
+        return
+    if str(args_cli.test_mode).strip().lower() == "traction_probe":
+        from src.traction_probe import run_traction_probe
+        try:
+            run_traction_probe(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Traction probe finished in {time.time() - start_time:.2f}s")
+        return
+    if str(args_cli.test_mode).strip().lower() == "braking_validation":
+        from src.braking_validation import run_braking_validation
+        try:
+            run_braking_validation(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Braking validation finished in {time.time() - start_time:.2f}s")
+        return
+    if str(args_cli.test_mode).strip().lower() == "native_brake_validation":
+        from src.native_brake_validation import run_native_brake_validation
+        try:
+            run_native_brake_validation(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Native brake validation finished in {time.time() - start_time:.2f}s")
+        return
+    if str(args_cli.test_mode).strip().lower() == "brake_friction_sweep":
+        from src.brake_friction_sweep import run_brake_friction_sweep
+        try:
+            run_brake_friction_sweep(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Brake friction sweep finished in {time.time() - start_time:.2f}s")
+        return
+    if str(args_cli.test_mode).strip().lower() == "obs_visualization":
+        from src.obs_visualization import run_obs_visualization
+        try:
+            run_obs_visualization(
+                base_env,
+                run_dir,
+                env_idx=int(getattr(args_cli, "obs_viz_env_idx", 0)),
+                agent_idx=int(getattr(args_cli, "obs_viz_agent_idx", 0)),
+                num_warmup_steps=int(getattr(args_cli, "obs_viz_warmup_steps", 10)),
+                warmup_action=getattr(args_cli, "obs_viz_warmup_action", None),
+            )
+        finally:
+            base_env.close()
+            print(f"[INFO] Obs visualization finished in {time.time() - start_time:.2f}s")
+        return
+
+    if str(args_cli.test_mode).strip().lower() == "physics_validation":
+        from src.physics_validation import run_physics_validation
+        try:
+            run_physics_validation(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Physics validation finished in {time.time() - start_time:.2f}s")
+        return
+
+    if str(args_cli.test_mode).strip().lower() == "traction_probe":
+        from src.traction_probe import run_traction_probe
+        try:
+            run_traction_probe(base_env, run_dir)
+        finally:
+            base_env.close()
+            print(f"[INFO] Traction probe finished in {time.time() - start_time:.2f}s")
         return
 
     if str(args_cli.shared_policy_mode).strip().lower() == "agent_slots":
@@ -2701,6 +3348,39 @@ def main():
             flush=True,
         )
 
+    # ── Cone randomization (activated by obstacle_randomize_num > 0 in env config) ──
+    # Normally cones drop only during training; --eval_with_obstacles opts eval in too
+    # (so you can watch the trained policy interact with the cones it learned on).
+    _obstacle_randomize_num = int(_cfg_value(file_cfg, "env", "obstacle_randomize_num", 0))
+    _cone_randomize_in_eval = bool(getattr(args_cli, "eval_with_obstacles", False))
+    if _obstacle_randomize_num > 0 and (not eval_test_mode or _cone_randomize_in_eval):
+        from src.obstacle_randomizer import (
+            ensure_obstacle_buffer,
+            RandomObstacleDropper,
+            DEFAULT_OBSTACLE_SLOTS as _MAX_CONE_SLOTS,
+        )
+        print(
+            f"[INFO][ConeRandomizer] Enabling random cone drops: "
+            f"{_obstacle_randomize_num} cones/env/episode, buffer={_MAX_CONE_SLOTS} slots",
+            flush=True,
+        )
+        _od_corridor      = bool(_cfg_value(file_cfg, "env", "cone_randomize_od_corridor", True))
+        _corridor_width_m = float(_cfg_value(file_cfg, "env", "cone_randomize_corridor_width_m", 4.0))
+        ensure_obstacle_buffer(base_env, _MAX_CONE_SLOTS)
+        _dropper = RandomObstacleDropper(
+            base_env,
+            num_obstacles=_obstacle_randomize_num,
+            seed=int(runner_cfg.seed),
+            od_corridor=_od_corridor,
+            corridor_width_m=_corridor_width_m,
+        )
+        base_env._obstacle_drop_fn = _dropper.drop
+        print(
+            f"[INFO][ConeRandomizer] RandomObstacleDropper registered: "
+            f"od_corridor={_od_corridor}, corridor_width={_corridor_width_m}m",
+            flush=True,
+        )
+
     runner = OnPolicyRunner(env, train_cfg, log_dir=str(run_dir), device=str(runner_cfg.device))
     runner.git_status_repos = [__file__]
 
@@ -2710,20 +3390,33 @@ def main():
         if not resume_path.is_file():
             raise FileNotFoundError(f"--resume_from checkpoint not found: {resume_path}")
         print(f"[INFO] Resuming training from checkpoint: {resume_path}", flush=True)
-        runner.load(str(resume_path), load_optimizer=True)
+        runner.load(str(resume_path), load_optimizer=False)
         print(f"[INFO] Resumed at iteration {runner.current_learning_iteration}", flush=True)
+        _reset_obs_normalizer(runner.alg.policy)
 
+    _outcome_status = "success"
+    _outcome_error: str | None = None
     try:
         if eval_test_mode:
             _run_scene_factory_policy_eval(base_env, env, runner, run_dir)
         else:
             runner.learn(num_learning_iterations=int(runner_cfg.max_iterations), init_at_random_ep_len=True)
+    except KeyboardInterrupt:
+        _outcome_status = "interrupted"
+        raise
+    except Exception as _exc:
+        _outcome_status = "error"
+        _outcome_error = f"{type(_exc).__name__}: {_exc}"
+        raise
     finally:
+        _wall = time.time() - start_time
+        _checkpoints = sorted(str(p) for p in run_dir.glob("model_*.pt"))
+        _write_outcome(run_dir, status=_outcome_status, wall_time_s=_wall, checkpoints=_checkpoints, error=_outcome_error)
         env.close()
         if eval_test_mode:
-            print(f"[INFO] Policy eval finished in {time.time() - start_time:.2f}s")
+            print(f"[INFO] Policy eval finished in {_wall:.2f}s")
         else:
-            print(f"[INFO] Training finished in {time.time() - start_time:.2f}s")
+            print(f"[INFO] Training finished in {_wall:.2f}s")
 
 
 if __name__ == "__main__":

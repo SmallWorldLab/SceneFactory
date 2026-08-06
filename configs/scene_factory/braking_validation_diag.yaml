@@ -1,0 +1,112 @@
+# braking_validation.yaml
+# NHTSA-style straight-line braking validation of the PhysX articulated vehicle.
+# No Waymo scene data required -- flat cuboid ground with friction_ruler_mode.
+#
+# 9 worlds, 1 agent each, PhysX dynamics, one mu per world:
+#   mu = [0.30, 0.40, 0.50, 0.60, 0.66, 0.70, 0.86, 1.00, 1.10]
+# Each world throttles up to v0=27.78 m/s (100 km/h) then applies full brake.
+#
+# Launch: bash run_braking_validation.sh
+
+env:
+  num_envs: 1
+  num_agents_per_env: 1
+  observation_mode: "choco_reference"
+  env_spacing: 300.0                     # wide: braking runway up to ~130 m per world
+  spawn_height_m: 1.2
+  spawn_yaw_noise_rad: 0.0
+  ground_mode: "cuboid"
+  dynamics_mode: "physx"
+  use_scene_factory_roads: false
+  episode_length_s: 600.0                # far longer than test duration
+  goal_radius_min_m: 8000.0              # unreachably far -- no goal-reached resets
+  goal_radius_max_m: 9000.0
+  max_distance_from_origin_m: 8000.0     # no distance-exceeded resets (runway is long)
+  agent_spawn_circle_radius_m: 0.0
+  agent_spawn_jitter_m: 0.0
+  start_radius_m: 0.0
+  fall_height_threshold_m: -5.0          # only reset on catastrophic fall
+  bad_tilt_gravity_threshold: -0.97      # very permissive tilt threshold
+  replicate_physics: false
+  agent_collision_warmup_steps: 0
+  # One mu per world; order MUST match MU_VALUES in src/braking_validation.py.
+  friction_ruler_mu_values: "1.00"
+  # Raise the velocity-controlled drive clamp so the target entry speed
+  # (27.78 m/s = 100 km/h) is reachable by throttle. This changes ONLY the drive
+  # target-speed clamp -- mass, brake torque, tires, suspension are unchanged.
+  bicycle_max_speed_mps: 19.5
+
+observation:
+  weather_context_enable: false
+  road_points_enable: false
+  road_points_k: 0
+  neighbor_enable: false
+  neighbor_k: 0
+  neighbor_include_ttc: false
+  neighbor_include_index: false
+
+timing:
+  step_log_enable: false
+  step_print_enable: false
+  step_print_every_n: 999
+  step_cuda_sync_enable: false
+
+reward:
+  mode: "choco_baseline"
+  goal_bonus: 0.0
+  lane_center_enable: false
+  lane_forbidden_enable: false
+  collision_penalty: 0.0
+  crash_penalty: 0.0
+  choco_offroad_penalty: 0.0
+  choco_idle_penalty_enable: false
+  choco_geom_lane_enable: false
+  choco_geom_offroad_enable: false
+  choco_ttc_penalty_enable: false
+  choco_road_edge_ttc_penalty_enable: false
+
+policy:
+  type: "late_fusion"
+  ego_layers: [32]
+  road_layers: [32]
+  vehicle_layers: [32]
+  shared_layers: [32]
+  last_layer_dim_pi: 32
+  last_layer_dim_vf: 32
+  activation: "relu"
+  dropout: 0.0
+  pool: "max"
+
+assets:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
+
+scene_factory:
+  # Needed for bounds_size_m lookup; roads disabled via use_scene_factory_roads=false
+  config_path: "configs/scene_factory/flat_ground_no_roads.yaml"
+  world_index: 0
+  world_selection_mode: "sequential"
+  random_world_seed: 42
+
+runner:
+  log_dir: "logs/rsl_rl"
+  seed: 42
+  experiment_name: "braking_validation"
+  run_name: "physx_diag_1world"
+  shared_policy_mode: "agent_slots"
+  max_iterations: 1
+  num_steps_per_env: 64
+  save_interval: 9999
+  learning_rate: 3.0e-4
+  num_learning_epochs: 1
+  num_mini_batches: 1
+  entropy_coef: 0.0
+  clip_param: 0.2
+  desired_kl: 0.01
+  gamma: 0.99
+  gae_lambda: 0.95
+  value_loss_coef: 1.0
+
+app:
+  device: "cuda:0"
+  rl_device: "cuda:0"

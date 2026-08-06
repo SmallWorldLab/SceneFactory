@@ -1,6 +1,6 @@
 # SceneFactory multi-agent goal-reaching smoke preset.
 # Usage:
-#   conda run -n isaac-pytorch python -m src.train_student_vehicle_goal_multiagent_rsl_rl \
+#   PYTHONPATH=. python src/train_student_vehicle_goal_multiagent_rsl_rl.py \
 #     --config configs/scene_factory/goal_reaching_smoke.yaml
 #
 # Purpose:
@@ -12,9 +12,12 @@ env:
   num_envs: 2
   num_agents_per_env: 2
   observation_mode: "goal_reaching"
-  env_spacing: 120.0
+  env_spacing: 1300.0
   spawn_height_m: 1.6
-  ground_mode: "plane"
+  ground_mode: "cuboid"
+  # 0.30 rather than the 0.10 default: 0.10 was tuned under overlapping
+  # slabs and is insufficient for the isolated slabs these configs now use.
+  ground_contact_offset_m: 0.30
   start_radius_m: 0.0
   agent_spawn_circle_radius_m: 10.0
   agent_spawn_jitter_m: 0.10

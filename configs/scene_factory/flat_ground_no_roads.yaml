@@ -1,0 +1,11 @@
+# Minimal scene pool for the tests that drive on flat ground with no road
+# geometry: braking validation, the brake-friction sweep, and their diagnostics.
+#
+# Those configs set use_scene_factory_roads=false, so nothing here builds a road
+# and no scene JSON is loaded. The only key the environment reads from a pool in
+# that mode is world.bounds_size_m, which sizes the drivable region.
+#
+# 200 m matches the platform default, and is long enough for the 100 km/h
+# braking protocol on the ground cuboid sizes those configs set.
+world:
+  bounds_size_m: 200.0

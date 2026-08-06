@@ -35,10 +35,13 @@ road:
   trigger_enable: false
 
 vehicles:
-  student_usd: "artifacts/student_vehicle_assets/vehicle_only_smoke/student_fwd_vehicle.usd"
+  student_usd: "artifacts/student_vehicle_assets/vehicle_only_smoke/student_fwd_vehicle_display.usd"
   tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
-  max_controllable_per_world: 8
-  spawn_height_m: 1.2
+  max_controllable_per_world: 16
+  # USD root-prim z so kinematic vehicles sit with wheels at ground level.
+  # wheel_bottom = root_z - 0.625(wheel_center) - 0.35(radius) = root_z - 0.975
+  # => root_z = 0.975 puts wheel bottom exactly at z=0.
+  spawn_height_m: 0.975
   require_goal_in_bounds: true
   skip_if_start_in_goal: true
   goal_radius_m: 3.0

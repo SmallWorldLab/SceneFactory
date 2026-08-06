@@ -1,0 +1,209 @@
+# Weather-EXPOSURE ablation, arm A: ALL DRY.
+#
+# Derived from waymo_physx_256_train_16agents_knn.yaml -- the config that produced
+# model E (2026-06-23_23-51-35_knn_16agents/model_2999.pt) -- differing in FOUR
+# keys: scene_factory.config_path, runner.run_name, and two bug fixes shared with
+# arm B (ground_cuboid_size_m, wheel_friction_cap).  Verify with:
+#   diff configs/scene_factory/waymo_physx_256_train_16agents_knn{,_alldry}.yaml
+#
+# Pairs with waymo_physx_256_train_16agents_knn_wet0to08.yaml.  The two configs
+# differ ONLY in their scene pool, and the two pools differ ONLY in water_film_mm.
+# Together they answer: does EXPOSURE to wet ground during training matter?
+# That is a different question from the eval-time weather-token blinding, which
+# tests only whether knowing the current condition beats hedging across them.
+#
+# This arm: every world at 0.0 mm.  The policy has no exposure to wet ground and
+# does not know it exists.
+#
+#   effective mu span : 1.105 - 1.200 (mean 1.121, sd 0.036)
+#
+# The spread is NOT uniform-dry: it is the dry-grip difference between AC, SMA and
+# OGFC surfaces, which the old 1.0 cap flattened to a single value.  44/256 worlds
+# still clip at the 1.2 ceiling.
+#
+# NOTE `ground_mode: "plane"` below is a DEAD FIELD -- nothing reads it.  Grep
+# confirms one hit in the multi-agent env, the declaration at :670, whose own
+# comment says '"plane" removed: infinite GroundPlane is shared and cannot be
+# per-env'.  _setup_scene hardcodes mode="cuboid" (:1537-1538).  Every run of this
+# env, including E, has been on per-env cuboids.  The field is left in place only
+# to keep the diff against E minimal.
+#
+# 256 worlds x 16 agents = 4096 agent slots
+#
+# To train:
+#   bash run_train_knn_alldry.sh
+
+env:
+  num_envs: 256
+  num_agents_per_env: 16
+  observation_mode: "choco_reference"
+  # RAISED 2026-07-26: 400 -> 1300 so ground slabs no longer overlap.
+  # At 400 with a 1000 m slab every vehicle sat on NINE slabs from NINE worlds and
+  # per-world friction was averaged across them -- i.e. per-world friction was not
+  # actually being applied (this is reviewer bm7r's Q6).  The previous attempt to
+  # fix that by shrinking the slab to 300 m instead destroyed traction: measured
+  # single-agent, single-slab, mean speed vs slab size --
+  #     200m 0.218 | 300m 0.398 | 500m 2.603 | 800m 4.501 | 1000m 4.421
+  #     1200m 4.506 | 2000m 1.621 | 5000m 0.622   (slip 0.96 -> 0.19 -> 0.89)
+  # There is a working band around 800-1200 m and the cause of that dependence is
+  # NOT understood -- treat it as a known defect, not a solved problem.
+  # spacing 1300 > slab 1000 satisfies both constraints: non-overlapping AND in
+  # the band.  Verified at 256 envs: idle 0.7%, mean v 4.076 m/s, z_end 0.768 m,
+  # no overlap warning, 256 cuboids each with its own mu.
+  env_spacing: 1300.0
+  # S1 FIX. The ground cuboid default is 1000 m (half-width 500 m) while envs sit
+  # 400 m apart, so every point a vehicle can reach lies inside NINE envs' ground
+  # slabs, all with their top face at z=0.  Cross-env collision filtering does not
+  # save this: filter_collisions is CPU-only (multiagent env :1550-1553) and the
+  # automatic GPU path needs replicate_physics=True, which is false here.  PhysX
+  # then splits normal force across the stacked slabs and the per-world mu is
+  # averaged over the 3x3 neighbourhood -- measured at 0.8% friction effect in
+  # configs/scene_factory/physics_validation.yaml (60 m spacing, 1000 m slab).
+  # Sized to the map crop instead of widening env_spacing: bounds_size_m is 200 m
+  # (+/-100 m) and max_distance_from_origin_m is 100 m, so 300 m covers the whole
+  # reachable area with 50 m margin, and adjacent slabs span [250, 550] against
+  # this one's [-150, 150] -- a 100 m gap.  Keeping spacing at 400 also keeps
+  # world origins near the coordinate origin (6.4 km span, not 24 km), which
+  # matters for float32 position precision.
+  # REVERTED 2026-07-26 to the 1000 m default after direct measurement.
+  # The "S1 FIX" below set this to 300 to stop per-env mu being averaged over the
+  # 3x3 slab neighbourhood.  Measured cost of that averaging: 0.8%.  Measured cost
+  # of the fix: traction collapse.  Probe (src/traction_probe.py), spawned agents
+  # inside the 100 m termination radius, resting ON the slab:
+  #     cuboid  300 : idle 18.3%  v 1.691 m/s  slip 0.695  z_end 0.646 m
+  #     cuboid 1000 : idle  0.0%  v 4.431 m/s  slip 0.199  z_end 0.775 m
+  # A single slab gives one contact constraint per wheel; the wheel sinks 13 cm,
+  # normal force drops, and the driven wheels spin.  Nine overlapping slabs give
+  # nine constraints and the wheel sits at the correct height.  contact_offset
+  # 0.10->0.30 does NOT fix it (49-51% idle throughout).
+  # Isolation still works at 1000: on the wet pool the 8 envs receive 8 distinct
+  # mu values (0.452-1.050) and per-env mean speed spans 1.204-4.348 m/s.
+  # This is what made alldry_s1/wet0to12_s1 train at 4x below the E backbone.
+  ground_cuboid_size_m: 1000.0
+  # Wheel-side friction ceiling. Contact mu = min(ground_mu, this) because both
+  # materials use friction_combine_mode="min". The vehicle USD bakes 1.0
+  # (src/procedural_student_vehicle_import.py:181), which clips every ground mu
+  # above 1.0 -- so a dry AC world estimated at 1.105 was simulated at 1.000 and
+  # 84/256 rainy worlds in arm B were physically identical to bone dry while
+  # their weather token reported rain. Applied at runtime to the wheel shapes,
+  # so the vehicle asset is untouched.
+  wheel_friction_cap: 1.2
+  spawn_height_m: 1.2
+  spawn_yaw_noise_rad: 0.0
+  ground_mode: "plane"
+  use_scene_factory_roads: true
+  reset_mode: "teleport_only"
+  start_radius_m: 0.0
+  agent_spawn_circle_radius_m: 0.0
+  agent_spawn_jitter_m: 0.0
+  episode_length_s: 45.0
+  goal_radius_min_m: 5.0
+  goal_radius_max_m: 30.0
+  goal_reached_threshold_m: 3.0
+  fall_height_threshold_m: 0.0
+  bad_tilt_gravity_threshold: -0.15
+  max_distance_from_origin_m: 100.0
+  agent_neighbor_obs_scale_m: 100.0
+  agent_collision_warmup_steps: 24
+  replicate_physics: false
+  clone_in_fabric: "false"
+
+scene_factory:
+  config_path: "configs/scene_factory/generated/scene_factory_256scene_0414_alldry.yaml"
+  world_index: 0
+  world_selection_mode: "random_envs"
+  random_world_seed: 42
+
+observation:
+  weather_context_enable: true
+  road_points_enable: true
+  road_points_k: 250
+  road_points_radius_m: 15.0
+  road_points_type_norm: 20.0
+  road_points_mode: "knn"
+  road_points_include_dirs: true
+  neighbor_enable: true
+  neighbor_k: 8
+  neighbor_include_ttc: true
+  neighbor_include_index: false
+  neighbor_ttc_max_s: 10.0
+  timing_print_enable: false
+  timing_print_every_n: 32
+
+timing:
+  step_log_enable: true
+  step_print_enable: false
+  step_print_every_n: 128
+  step_cuda_sync_enable: false
+
+reward:
+  mode: "choco_baseline"
+  goal_bonus: 60.0
+  lane_center_enable: false
+  lane_forbidden_enable: true
+  lane_forbidden_penalty: -20.0
+  collision_penalty: -6.0
+  crash_penalty: -10.0
+  choco_offroad_penalty: -0.5
+  choco_idle_penalty_enable: true
+  choco_idle_penalty_per_step: 0.06
+  choco_idle_speed_threshold_mps: 2.5
+  choco_geom_lane_enable: true
+  choco_geom_lane_per_step: 0.08
+  choco_geom_lane_tolerance_m: 1.75
+  choco_geom_lane_heading_weight: 0.8
+  choco_geom_lane_min_alignment: 0.35
+  choco_geom_route_progress_weight: 4.0
+  choco_geom_offroad_enable: true
+  choco_geom_offroad_lateral_threshold_m: 3.25
+  choco_geom_offroad_distance_threshold_m: 6.0
+  choco_ttc_penalty_enable: true
+  choco_ttc_penalty_alpha: 0.10
+  choco_ttc_penalty_max: 0.35
+  choco_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_penalty_enable: true
+  choco_road_edge_ttc_penalty_alpha: 0.07
+  choco_road_edge_ttc_penalty_max: 0.40
+  choco_road_edge_ttc_penalty_min_ttc: 0.5
+  choco_road_edge_ttc_hard_min_ttc: 0.5
+  choco_road_edge_ttc_radius_m: 40.0
+
+policy:
+  type: "late_fusion"
+  ego_layers: [64, 64]
+  road_layers: [96, 96]
+  vehicle_layers: [96, 96]
+  shared_layers: [128, 64]
+  last_layer_dim_pi: 64
+  last_layer_dim_vf: 64
+  activation: "relu"
+  dropout: 0.0
+  pool: "max"
+
+assets:
+  student_usd: "artifacts/student_vehicle_assets/vehicle_student/student_fwd_vehicle.usd"
+  tunable_config_json: "artifacts/student_vehicle_sysid/comprehensive_fwd_v1_cem_v4/best_config.json"
+
+runner:
+  log_dir: "logs/rsl_rl"
+  seed: 42
+  experiment_name: "waymo_physx_256"
+  run_name: "knn_16agents_alldry"
+  shared_policy_mode: "agent_slots"
+  max_iterations: 1500
+  num_steps_per_env: 64
+  save_interval: 50
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  noise_std_type: "log"
+  entropy_coef: 1.0e-5
+  learning_rate: 1.0e-4
+  clip_param: 0.15
+  desired_kl: 0.01
+  gamma: 0.99
+  gae_lambda: 0.98
+  value_loss_coef: 1.0
+
+app:
+  device: "cuda:0"
+  rl_device: "cuda:0"
